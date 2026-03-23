@@ -41,6 +41,7 @@ tokio-stream = "0.1"
 futures-util = { version = "0.3", features = ["std", "async-await"], default-features = false }
 
 slotmap.workspace = true
+ignore = "0.4"
 
 chardetng = "1.0"
 
