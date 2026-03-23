@@ -29,6 +29,8 @@ pub struct FileTreeConfig {
     /// Scope git status queries to the tree root instead of the entire
     /// worktree. Faster in monorepos.
     pub git_status_scope_to_path: bool,
+    /// Show nerd font file/folder icons.
+    pub icons: bool,
 }
 
 impl Default for FileTreeConfig {
@@ -43,6 +45,7 @@ impl Default for FileTreeConfig {
             follow_symlinks: false,
             max_depth: Some(10),
             git_status_scope_to_path: false,
+            icons: true,
         }
     }
 }
@@ -133,6 +136,8 @@ pub struct FileTree {
     /// Debounce state for follow-current-file (100ms).
     follow_target: Option<PathBuf>,
     follow_deadline: Option<Instant>,
+    /// Path to reveal after an async directory load completes.
+    pending_reveal: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for FileTree {
@@ -187,7 +192,13 @@ impl FileTree {
             git_refresh_deadline: None,
             follow_target: None,
             follow_deadline: None,
+            pending_reveal: None,
         })
+    }
+
+    /// Trigger async loading of the root directory's children.
+    pub fn load_root(&self, config: &FileTreeConfig) {
+        self.spawn_load_children(self.root_id, config);
     }
 
     /// Creates a `FileTree` from an already-constructed set of nodes.
@@ -215,6 +226,7 @@ impl FileTree {
             git_refresh_deadline: None,
             follow_target: None,
             follow_deadline: None,
+            pending_reveal: None,
         }
     }
 
@@ -437,6 +449,11 @@ impl FileTree {
             }
         }
 
+        // Retry pending reveal after directory loads complete
+        if let Some(path) = self.pending_reveal.take() {
+            self.reveal_path(&path, config);
+        }
+
         if self.visible_dirty {
             self.rebuild_visible();
         }
@@ -572,7 +589,8 @@ impl FileTree {
     // --- Reveal path ---
 
     /// Expand ancestors and select the node at the given path.
-    /// Loads directories synchronously along the path if needed.
+    /// When an unloaded directory is encountered, spawns an async load and
+    /// stores the target in `pending_reveal` to retry after loading completes.
     pub fn reveal_path(&mut self, path: &Path, config: &FileTreeConfig) {
         let relative = match path.strip_prefix(&self.root) {
             Ok(r) => r,
@@ -590,7 +608,12 @@ impl FileTree {
             };
 
             if !node.loaded && node.kind == NodeKind::Directory {
-                self.load_children_sync(current_id, config);
+                self.spawn_load_children(current_id, config);
+                if let Some(n) = self.nodes.get_mut(current_id) {
+                    n.expanded = true;
+                }
+                self.pending_reveal = Some(path.to_path_buf());
+                return;
             }
 
             if let Some(n) = self.nodes.get_mut(current_id) {
@@ -613,66 +636,12 @@ impl FileTree {
             }
         }
 
+        self.pending_reveal = None;
         self.visible_dirty = true;
         self.rebuild_visible();
         if let Some(pos) = self.visible.iter().position(|&id| id == current_id) {
             self.selected = pos;
             self.ensure_selected_visible();
-        }
-    }
-
-    fn load_children_sync(&mut self, node_id: NodeId, config: &FileTreeConfig) {
-        let path = self.node_path(node_id);
-        let walker = ignore::WalkBuilder::new(&path)
-            .hidden(!config.hidden)
-            .git_ignore(config.git_ignore)
-            .follow_links(config.follow_symlinks)
-            .max_depth(Some(1))
-            .sort_by_file_name(|a, b| a.cmp(b))
-            .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
-            .add_custom_ignore_filename(".helix/ignore")
-            .build();
-
-        let depth = self.nodes.get(node_id).map(|n| n.depth + 1).unwrap_or(1);
-        let mut child_ids = Vec::new();
-
-        for result in walker {
-            if let Ok(entry) = result {
-                if entry.path() == path {
-                    continue;
-                }
-                let name = entry.file_name().to_string_lossy().to_string();
-                let kind = if entry
-                    .file_type()
-                    .map(|ft| ft.is_dir())
-                    .unwrap_or(false)
-                {
-                    NodeKind::Directory
-                } else {
-                    NodeKind::File
-                };
-                let child_id = self.nodes.insert(FileNode {
-                    name,
-                    kind,
-                    parent: Some(node_id),
-                    children: Vec::new(),
-                    expanded: false,
-                    loaded: false,
-                    depth,
-                });
-                child_ids.push(child_id);
-            }
-        }
-
-        child_ids.sort_by(|&a, &b| {
-            let na = &self.nodes[a];
-            let nb = &self.nodes[b];
-            na.kind.cmp(&nb.kind).then(na.name.cmp(&nb.name))
-        });
-
-        if let Some(node) = self.nodes.get_mut(node_id) {
-            node.children = child_ids;
-            node.loaded = true;
         }
     }
 
@@ -708,10 +677,13 @@ impl FileTree {
         self.git_refresh_deadline = Some(Instant::now() + Self::GIT_REFRESH_DEBOUNCE);
     }
 
-    /// Queue a follow-current-file reveal.
+    /// Queue a follow-current-file reveal. Only sets the deadline once so
+    /// repeated calls (e.g. every render frame) don't push it forward forever.
     pub fn request_follow(&mut self, path: PathBuf) {
         self.follow_target = Some(path);
-        self.follow_deadline = Some(Instant::now() + Self::FOLLOW_DEBOUNCE);
+        if self.follow_deadline.is_none() {
+            self.follow_deadline = Some(Instant::now() + Self::FOLLOW_DEBOUNCE);
+        }
     }
 
     fn check_git_refresh_timer(&mut self, diff_providers: &DiffProviderRegistry) {
@@ -1326,8 +1298,8 @@ mod tests {
         assert_eq!(tree.selected, old_selected);
     }
 
-    #[test]
-    fn test_reveal_path_with_sync_load() {
+    #[tokio::test]
+    async fn test_reveal_path_with_async_load() {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("sub");
         std::fs::create_dir(&sub).unwrap();
@@ -1336,8 +1308,22 @@ mod tests {
         let mut tree = FileTree::new(dir.path().to_path_buf()).unwrap();
         let config = FileTreeConfig::default();
 
-        // Root is not loaded yet, reveal should load it synchronously
+        // Root is not loaded yet — reveal should spawn async load and set pending_reveal
         tree.reveal_path(&sub.join("file.txt"), &config);
+        assert!(tree.pending_reveal.is_some());
+
+        // Wait for the background load to complete
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Process the channel update, which retries the pending reveal
+        tree.process_updates(&config, None);
+
+        // Root should now be loaded and sub should be pending
+        assert!(tree.nodes[tree.root_id].loaded);
+
+        // Wait for sub directory load
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        tree.process_updates(&config, None);
 
         // The file should be selected
         let selected_node = tree.selected_node().unwrap();
@@ -1390,5 +1376,27 @@ mod tests {
             Some(Path::new("/tmp/project/src/main.rs"))
         );
         assert!(tree.follow_deadline.is_some());
+    }
+
+    #[test]
+    fn test_request_follow_does_not_reset_deadline() {
+        let (mut tree, _, _, _, _) = build_test_tree();
+
+        tree.request_follow(PathBuf::from("/tmp/project/src/main.rs"));
+        let first_deadline = tree.follow_deadline.unwrap();
+
+        // Simulate time passing
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Second call should NOT reset the deadline
+        tree.request_follow(PathBuf::from("/tmp/project/src/lib.rs"));
+        let second_deadline = tree.follow_deadline.unwrap();
+
+        assert_eq!(first_deadline, second_deadline);
+        // But the target should be updated
+        assert_eq!(
+            tree.follow_target.as_deref(),
+            Some(Path::new("/tmp/project/src/lib.rs"))
+        );
     }
 }

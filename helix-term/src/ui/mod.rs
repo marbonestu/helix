@@ -1,6 +1,7 @@
 mod completion;
 mod document;
 pub(crate) mod editor;
+pub(crate) mod file_icons;
 pub(crate) mod file_tree;
 mod info;
 pub mod lsp;

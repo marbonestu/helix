@@ -1,7 +1,9 @@
 use helix_view::editor::Editor;
-use helix_view::file_tree::{FileTree, GitStatus, NodeKind};
+use helix_view::file_tree::{FileTree, FileTreeConfig, GitStatus, NodeKind};
 use helix_view::graphics::Rect;
 use tui::buffer::Buffer as Surface;
+
+use super::file_icons;
 
 /// Render the file tree sidebar into the given area.
 pub fn render_file_tree(
@@ -10,17 +12,19 @@ pub fn render_file_tree(
     surface: &mut Surface,
     editor: &Editor,
     is_focused: bool,
+    config: &FileTreeConfig,
 ) {
     if area.width < 5 || area.height < 2 {
         return;
     }
 
     let theme = &editor.theme;
+    let show_icons = config.icons;
 
-    // Background
+    // Background — fall back to statusline for visible contrast
     let bg_style = theme
         .try_get("ui.sidebar")
-        .unwrap_or_else(|| theme.get("ui.background"));
+        .unwrap_or_else(|| theme.get("ui.statusline"));
     surface.set_style(area, bg_style);
 
     // Vertical separator on right edge
@@ -39,7 +43,7 @@ pub fn render_file_tree(
     let selected_style = if is_focused {
         theme
             .try_get("ui.sidebar.selected")
-            .unwrap_or_else(|| theme.get("ui.cursor.primary"))
+            .unwrap_or_else(|| theme.get("ui.menu.selected"))
     } else {
         theme
             .try_get("ui.sidebar.selected")
@@ -51,7 +55,7 @@ pub fn render_file_tree(
         .unwrap_or_else(|| theme.get("ui.text"));
     let dir_style = theme
         .try_get("ui.sidebar.directory")
-        .unwrap_or_else(|| theme.get("ui.text"));
+        .unwrap_or_else(|| theme.get("ui.text.directory"));
 
     let visible = tree.visible();
     let scroll = tree.scroll_offset();
@@ -98,9 +102,33 @@ pub fn render_file_tree(
 
         surface.set_stringn(x, y, indicator, remaining_width, style);
 
+        // Icon (2 chars: icon + space)
+        let mut name_x = x + 2; // after indicator
+        let mut name_width = remaining_width.saturating_sub(2);
+
+        if show_icons && name_width >= 3 {
+            let (icon, icon_scope) = match node.kind {
+                NodeKind::Directory => file_icons::icon_for_directory(node.expanded),
+                NodeKind::File => file_icons::icon_for_file(&node.name),
+            };
+
+            let icon_style = if is_selected {
+                selected_style
+            } else {
+                theme
+                    .try_get(icon_scope)
+                    .or_else(|| theme.try_get("ui.sidebar.icon"))
+                    .or_else(|| theme.try_get("ui.sidebar.file"))
+                    .unwrap_or_else(|| theme.get("ui.text"))
+            };
+
+            surface.set_stringn(name_x, y, icon, name_width, icon_style);
+            // Nerd font icons are typically 1-2 cells wide; use 2 for consistent spacing
+            name_x += 2;
+            name_width = name_width.saturating_sub(2);
+        }
+
         // Filename
-        let name_x = x + 2; // indicator is 2 chars
-        let name_width = remaining_width.saturating_sub(2);
         if name_width > 0 {
             surface.set_stringn(name_x, y, &node.name, name_width, style);
         }

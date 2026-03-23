@@ -3208,7 +3208,7 @@ fn toggle_file_tree(cx: &mut Context) {
         let root = find_workspace().0;
         match helix_view::file_tree::FileTree::new(root) {
             Ok(mut tree) => {
-                // Trigger initial git status scan
+                tree.load_root(&config.file_tree);
                 if config.file_tree.git_status {
                     tree.request_git_refresh();
                 }
@@ -5803,11 +5803,20 @@ fn rotate_view_reverse(cx: &mut Context) {
 }
 
 fn jump_view_right(cx: &mut Context) {
+    if cx.editor.file_tree_focused {
+        cx.editor.file_tree_focused = false;
+        return;
+    }
     cx.editor.focus_direction(tree::Direction::Right)
 }
 
 fn jump_view_left(cx: &mut Context) {
-    cx.editor.focus_direction(tree::Direction::Left)
+    let current_view = cx.editor.tree.focus;
+    if let Some(id) = cx.editor.tree.find_split_in_direction(current_view, tree::Direction::Left) {
+        cx.editor.focus(id);
+    } else if cx.editor.file_tree_visible {
+        cx.editor.file_tree_focused = true;
+    }
 }
 
 fn jump_view_up(cx: &mut Context) {

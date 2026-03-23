@@ -1528,27 +1528,30 @@ impl EditorView {
                 EventResult::Consumed(None)
             }
             KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
-                if let Some(ref mut tree) = cx.editor.file_tree {
+                let open_path = if let Some(ref mut tree) = cx.editor.file_tree {
                     if let Some(id) = tree.selected_id() {
-                        let node = tree.nodes().get(id);
-                        match node.map(|n| n.kind) {
+                        match tree.nodes().get(id).map(|n| n.kind) {
                             Some(NodeKind::Directory) => {
                                 tree.toggle_expand(id, &config);
+                                None
                             }
-                            Some(NodeKind::File) => {
-                                let path = tree.node_path(id);
-                                cx.callback.push(Box::new(move |_compositor, cx| {
-                                    if let Err(e) =
-                                        cx.editor.open(&path, helix_view::editor::Action::Load)
-                                    {
-                                        cx.editor.set_error(format!("{}", e));
-                                    } else {
-                                        cx.editor.file_tree_focused = false;
-                                    }
-                                }));
-                            }
-                            None => {}
+                            Some(NodeKind::File) => Some(tree.node_path(id)),
+                            None => None,
                         }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(path) = open_path {
+                    if let Err(e) =
+                        cx.editor.open(&path, helix_view::editor::Action::Load)
+                    {
+                        cx.editor.set_error(format!("{}", e));
+                    } else {
+                        cx.editor.file_tree_focused = false;
                     }
                 }
                 EventResult::Consumed(None)
@@ -1574,6 +1577,10 @@ impl EditorView {
                     tree.jump_to_bottom();
                 }
                 EventResult::Consumed(None)
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                cx.editor.file_tree_focused = false;
+                EventResult::Ignored(None)
             }
             _ => EventResult::Ignored(None),
         }
@@ -1856,6 +1863,7 @@ impl Component for EditorView {
                     surface,
                     cx.editor,
                     cx.editor.file_tree_focused,
+                    &config.file_tree,
                 );
             }
         }
