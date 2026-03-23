@@ -153,7 +153,7 @@ impl std::fmt::Debug for FileTree {
 }
 
 impl FileTree {
-    pub fn new(root: PathBuf) -> Result<Self, String> {
+    pub fn new(root: PathBuf, config: &FileTreeConfig) -> Result<Self, String> {
         if !root.exists() {
             return Err(format!("Root path does not exist: {}", root.display()));
         }
@@ -176,7 +176,7 @@ impl FileTree {
             depth: 0,
         });
 
-        Ok(Self {
+        let mut tree = Self {
             root,
             root_id,
             nodes,
@@ -193,12 +193,14 @@ impl FileTree {
             follow_target: None,
             follow_deadline: None,
             pending_reveal: None,
-        })
-    }
+        };
 
-    /// Trigger async loading of the root directory's children.
-    pub fn load_root(&self, config: &FileTreeConfig) {
-        self.spawn_load_children(self.root_id, config);
+        // Load root children synchronously so the tree is populated on
+        // first render. A depth-1 walk is fast (milliseconds).
+        tree.load_children_sync(root_id, config);
+        tree.rebuild_visible();
+
+        Ok(tree)
     }
 
     /// Creates a `FileTree` from an already-constructed set of nodes.
@@ -370,6 +372,63 @@ impl FileTree {
             });
             helix_event::request_redraw();
         });
+    }
+
+    /// Synchronously load one level of directory children. Used for the
+    /// initial root load so the tree is populated on first render.
+    fn load_children_sync(&mut self, node_id: NodeId, config: &FileTreeConfig) {
+        let path = self.node_path(node_id);
+        let walker = ignore::WalkBuilder::new(&path)
+            .hidden(!config.hidden)
+            .git_ignore(config.git_ignore)
+            .follow_links(config.follow_symlinks)
+            .max_depth(Some(1))
+            .sort_by_file_name(|a, b| a.cmp(b))
+            .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
+            .add_custom_ignore_filename(".helix/ignore")
+            .build();
+
+        let depth = self.nodes.get(node_id).map(|n| n.depth + 1).unwrap_or(1);
+        let mut child_ids = Vec::new();
+
+        for result in walker {
+            if let Ok(entry) = result {
+                if entry.path() == path {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().to_string();
+                let kind = if entry
+                    .file_type()
+                    .map(|ft| ft.is_dir())
+                    .unwrap_or(false)
+                {
+                    NodeKind::Directory
+                } else {
+                    NodeKind::File
+                };
+                let child_id = self.nodes.insert(FileNode {
+                    name,
+                    kind,
+                    parent: Some(node_id),
+                    children: Vec::new(),
+                    expanded: false,
+                    loaded: false,
+                    depth,
+                });
+                child_ids.push(child_id);
+            }
+        }
+
+        child_ids.sort_by(|&a, &b| {
+            let na = &self.nodes[a];
+            let nb = &self.nodes[b];
+            na.kind.cmp(&nb.kind).then(na.name.cmp(&nb.name))
+        });
+
+        if let Some(node) = self.nodes.get_mut(node_id) {
+            node.children = child_ids;
+            node.loaded = true;
+        }
     }
 
     /// Drain the update channel and check debounce timers. Called at the
@@ -818,7 +877,7 @@ mod tests {
 
     #[test]
     fn test_new_nonexistent_root_returns_error() {
-        let result = FileTree::new(PathBuf::from("/nonexistent/path/that/doesnt/exist"));
+        let result = FileTree::new(PathBuf::from("/nonexistent/path/that/doesnt/exist"), &FileTreeConfig::default());
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("does not exist"));
     }
@@ -826,12 +885,12 @@ mod tests {
     #[test]
     fn test_new_creates_root_node() {
         let dir = tempfile::tempdir().unwrap();
-        let tree = FileTree::new(dir.path().to_path_buf()).unwrap();
+        let tree = FileTree::new(dir.path().to_path_buf(), &FileTreeConfig::default()).unwrap();
 
         let root = tree.nodes.get(tree.root_id()).unwrap();
         assert_eq!(root.kind, NodeKind::Directory);
         assert!(root.expanded);
-        assert!(!root.loaded);
+        assert!(root.loaded);
         assert_eq!(root.depth, 0);
         assert!(root.parent.is_none());
     }
@@ -1315,23 +1374,17 @@ mod tests {
         std::fs::create_dir(&sub).unwrap();
         std::fs::write(sub.join("file.txt"), "content").unwrap();
 
-        let mut tree = FileTree::new(dir.path().to_path_buf()).unwrap();
         let config = FileTreeConfig::default();
+        let mut tree = FileTree::new(dir.path().to_path_buf(), &config).unwrap();
 
-        // Trigger async root load (as toggle_file_tree does in real usage)
-        tree.load_root(&config);
+        // Root is loaded synchronously by new(), but sub/ is not
+        assert!(tree.nodes[tree.root_id].loaded);
 
-        // Root not loaded yet — reveal should set pending_reveal and wait
+        // reveal_path should spawn async load for sub/ and set pending_reveal
         tree.reveal_path(&sub.join("file.txt"), &config);
         assert!(tree.pending_reveal.is_some());
 
-        // Wait for root load to complete
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        tree.process_updates(&config, None);
-
-        assert!(tree.nodes[tree.root_id].loaded);
-
-        // Wait for sub directory load (spawned by pending_reveal retry)
+        // Wait for sub directory load to complete
         tokio::time::sleep(Duration::from_millis(500)).await;
         tree.process_updates(&config, None);
 

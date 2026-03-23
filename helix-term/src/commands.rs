@@ -3206,9 +3206,8 @@ fn toggle_file_tree(cx: &mut Context) {
     let config = cx.editor.config();
     if cx.editor.file_tree.is_none() {
         let root = find_workspace().0;
-        match helix_view::file_tree::FileTree::new(root) {
+        match helix_view::file_tree::FileTree::new(root, &config.file_tree) {
             Ok(mut tree) => {
-                tree.load_root(&config.file_tree);
                 if config.file_tree.git_status {
                     tree.request_git_refresh();
                 }

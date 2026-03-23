@@ -2870,7 +2870,8 @@ fn tree_toggle(
 
     if cx.editor.file_tree.is_none() {
         let root = find_workspace().0;
-        let tree = helix_view::file_tree::FileTree::new(root)
+        let config = cx.editor.config();
+        let tree = helix_view::file_tree::FileTree::new(root, &config.file_tree)
             .map_err(|e| anyhow::anyhow!(e))?;
         cx.editor.file_tree = Some(tree);
     }
