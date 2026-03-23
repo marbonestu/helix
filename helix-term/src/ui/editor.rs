@@ -1821,8 +1821,12 @@ impl Component for EditorView {
         // Process pending file tree updates before rendering
         let diff_providers = cx.editor.diff_providers.clone();
 
-        // Follow current file: queue a debounced reveal
-        if config.file_tree.follow_current_file && cx.editor.file_tree_visible {
+        // Follow current file: queue a debounced reveal (only when tree
+        // is not focused, so user navigation isn't interrupted)
+        if config.file_tree.follow_current_file
+            && cx.editor.file_tree_visible
+            && !cx.editor.file_tree_focused
+        {
             let current_path = {
                 let (_view, doc) = current!(cx.editor);
                 doc.path().cloned()

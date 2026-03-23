@@ -574,8 +574,11 @@ impl FileTree {
     }
 
     /// Rebuild the flat visible list from the tree structure using
-    /// stack-based traversal.
+    /// stack-based traversal. Preserves the selected node across rebuilds.
     fn rebuild_visible(&mut self) {
+        // Remember which node was selected so we can restore after rebuild
+        let selected_node_id = self.visible.get(self.selected).copied();
+
         self.visible.clear();
         let mut stack = vec![self.root_id];
 
@@ -588,6 +591,13 @@ impl FileTree {
                         stack.push(child);
                     }
                 }
+            }
+        }
+
+        // Restore selection by NodeId rather than raw index
+        if let Some(prev_id) = selected_node_id {
+            if let Some(pos) = self.visible.iter().position(|&id| id == prev_id) {
+                self.selected = pos;
             }
         }
 
