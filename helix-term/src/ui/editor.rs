@@ -1547,7 +1547,7 @@ impl EditorView {
 
                 if let Some(path) = open_path {
                     if let Err(e) =
-                        cx.editor.open(&path, helix_view::editor::Action::Load)
+                        cx.editor.open(&path, helix_view::editor::Action::Replace)
                     {
                         cx.editor.set_error(format!("{}", e));
                     } else {

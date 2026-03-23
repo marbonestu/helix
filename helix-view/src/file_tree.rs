@@ -368,6 +368,7 @@ impl FileTree {
                 parent: node_id,
                 entries,
             });
+            helix_event::request_redraw();
         });
     }
 
