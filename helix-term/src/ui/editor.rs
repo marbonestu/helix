@@ -1754,8 +1754,9 @@ impl Component for EditorView {
         };
 
         // Process pending file tree updates before rendering
+        let diff_providers = cx.editor.diff_providers.clone();
         if let Some(ref mut tree) = cx.editor.file_tree {
-            tree.process_updates(&config.file_tree);
+            tree.process_updates(&config.file_tree, Some(&diff_providers));
         }
 
         // if the terminal size suddenly changed, we need to trigger a resize

@@ -3207,7 +3207,13 @@ fn toggle_file_tree(cx: &mut Context) {
     if cx.editor.file_tree.is_none() {
         let root = find_workspace().0;
         match helix_view::file_tree::FileTree::new(root) {
-            Ok(tree) => cx.editor.file_tree = Some(tree),
+            Ok(mut tree) => {
+                // Trigger initial git status scan
+                if config.file_tree.git_status {
+                    tree.request_git_refresh();
+                }
+                cx.editor.file_tree = Some(tree);
+            }
             Err(e) => {
                 cx.editor
                     .set_error(format!("Failed to open file tree: {}", e));

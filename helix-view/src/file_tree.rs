@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use helix_vcs::{DiffProviderRegistry, FileChange};
 use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
 use tokio::sync::mpsc;
@@ -360,7 +361,17 @@ impl FileTree {
 
     /// Drain the update channel and check debounce timers. Called at the
     /// start of each render cycle.
-    pub fn process_updates(&mut self, config: &FileTreeConfig) {
+    pub fn process_updates(
+        &mut self,
+        config: &FileTreeConfig,
+        diff_providers: Option<&DiffProviderRegistry>,
+    ) {
+        // Check debounce timers
+        if let Some(providers) = diff_providers {
+            self.check_git_refresh_timer(providers);
+        }
+        self.check_follow_timer(config);
+
         // Drain channel
         while let Ok(update) = self.update_rx.try_recv() {
             match update {
@@ -701,6 +712,47 @@ impl FileTree {
     pub fn request_follow(&mut self, path: PathBuf) {
         self.follow_target = Some(path);
         self.follow_deadline = Some(Instant::now() + Self::FOLLOW_DEBOUNCE);
+    }
+
+    fn check_git_refresh_timer(&mut self, diff_providers: &DiffProviderRegistry) {
+        if let Some(deadline) = self.git_refresh_deadline {
+            if Instant::now() >= deadline {
+                self.git_refresh_deadline = None;
+                self.spawn_git_status(diff_providers.clone());
+            }
+        }
+    }
+
+    fn check_follow_timer(&mut self, config: &FileTreeConfig) {
+        if let Some(deadline) = self.follow_deadline {
+            if Instant::now() >= deadline {
+                self.follow_deadline = None;
+                if let Some(path) = self.follow_target.take() {
+                    self.reveal_path(&path, config);
+                }
+            }
+        }
+    }
+
+    /// Spawn a background task to collect git status for all changed files.
+    fn spawn_git_status(&self, diff_providers: DiffProviderRegistry) {
+        let tx = self.update_tx.clone();
+        let root = self.root.clone();
+
+        diff_providers.for_each_changed_file(root, move |result| {
+            if let Ok(change) = result {
+                let status = match &change {
+                    FileChange::Untracked { .. } => GitStatus::Untracked,
+                    FileChange::Modified { .. } => GitStatus::Modified,
+                    FileChange::Deleted { .. } => GitStatus::Deleted,
+                    FileChange::Renamed { .. } => GitStatus::Renamed,
+                    FileChange::Conflict { .. } => GitStatus::Conflict,
+                };
+                let path = change.path().to_owned();
+                let _ = tx.blocking_send(FileTreeUpdate::GitStatus(vec![(path, status)]));
+            }
+            true
+        });
     }
 }
 
@@ -1049,7 +1101,7 @@ mod tests {
         })
         .unwrap();
 
-        tree.process_updates(&config);
+        tree.process_updates(&config, None);
 
         let root = &tree.nodes[root_id];
         assert_eq!(root.children.len(), 2);
@@ -1079,7 +1131,7 @@ mod tests {
         })
         .unwrap();
 
-        tree.process_updates(&config);
+        tree.process_updates(&config, None);
 
         // Old children (src, Cargo.toml) should be removed
         assert!(tree.nodes.get(src_id).is_none());
@@ -1155,7 +1207,7 @@ mod tests {
         ]))
         .unwrap();
 
-        tree.process_updates(&config);
+        tree.process_updates(&config, None);
 
         assert!(tree.git_status_map.contains_key(&PathBuf::from("/tmp/project/src/main.rs")));
         // Dir cache should be rebuilt
