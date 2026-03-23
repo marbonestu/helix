@@ -340,6 +340,158 @@ impl FileTree {
             });
         });
     }
+
+    /// Drain the update channel and check debounce timers. Called at the
+    /// start of each render cycle.
+    pub fn process_updates(&mut self, config: &FileTreeConfig) {
+        // Drain channel
+        while let Ok(update) = self.update_rx.try_recv() {
+            match update {
+                FileTreeUpdate::ChildrenLoaded { parent, entries } => {
+                    let Some(parent_node) = self.nodes.get(parent) else {
+                        continue;
+                    };
+                    let depth = parent_node.depth + 1;
+
+                    // Remove old children if re-scanning
+                    let old_children: Vec<NodeId> = self
+                        .nodes
+                        .get(parent)
+                        .map(|n| n.children.clone())
+                        .unwrap_or_default();
+                    for old_id in old_children {
+                        self.nodes.remove(old_id);
+                    }
+
+                    let mut child_ids = Vec::with_capacity(entries.len());
+                    for (name, kind) in entries {
+                        let child_id = self.nodes.insert(FileNode {
+                            name,
+                            kind,
+                            parent: Some(parent),
+                            children: Vec::new(),
+                            expanded: false,
+                            loaded: false,
+                            depth,
+                        });
+                        child_ids.push(child_id);
+                    }
+
+                    if let Some(parent_node) = self.nodes.get_mut(parent) {
+                        parent_node.children = child_ids;
+                        parent_node.loaded = true;
+                    }
+                    self.visible_dirty = true;
+                }
+                FileTreeUpdate::GitStatus(statuses) => {
+                    for (path, status) in statuses {
+                        self.git_status_map.insert(path, status);
+                    }
+
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    let mut entries: Vec<_> = self.git_status_map.iter().collect();
+                    entries.sort_by_key(|(p, _)| p.clone());
+                    for (path, status) in &entries {
+                        path.hash(&mut hasher);
+                        status.severity().hash(&mut hasher);
+                    }
+                    let new_hash = hasher.finish();
+
+                    if self.last_git_status_hash != Some(new_hash) {
+                        self.last_git_status_hash = Some(new_hash);
+                        self.rebuild_dir_status_cache();
+                    }
+                }
+                FileTreeUpdate::ScanError { path, reason } => {
+                    log::warn!("file tree: {}: {}", path.display(), reason);
+                }
+            }
+        }
+
+        if self.visible_dirty {
+            self.rebuild_visible();
+        }
+    }
+
+    fn rebuild_dir_status_cache(&mut self) {
+        self.dir_status_cache.clear();
+
+        for (path, &status) in &self.git_status_map {
+            let mut ancestor = path.parent();
+            while let Some(dir) = ancestor {
+                if dir < self.root.as_path() {
+                    break;
+                }
+                let entry = self
+                    .dir_status_cache
+                    .entry(dir.to_path_buf())
+                    .or_insert(GitStatus::Clean);
+                if status.severity() > entry.severity() {
+                    *entry = status;
+                }
+                ancestor = dir.parent();
+            }
+        }
+    }
+
+    pub fn git_status_for(&self, id: NodeId) -> GitStatus {
+        let path = self.node_path(id);
+        let node = match self.nodes.get(id) {
+            Some(n) => n,
+            None => return GitStatus::Clean,
+        };
+
+        match node.kind {
+            NodeKind::File => {
+                if let Some(&status) = self.git_status_map.get(&path) {
+                    return status;
+                }
+                // Inherit untracked from parent directory
+                let mut current = id;
+                while let Some(parent_id) = self.nodes.get(current).and_then(|n| n.parent) {
+                    let parent_path = self.node_path(parent_id);
+                    if let Some(&s) = self.git_status_map.get(&parent_path) {
+                        if matches!(s, GitStatus::Untracked) {
+                            return s;
+                        }
+                    }
+                    current = parent_id;
+                }
+                GitStatus::Clean
+            }
+            NodeKind::Directory => self
+                .dir_status_cache
+                .get(&path)
+                .copied()
+                .unwrap_or(GitStatus::Clean),
+        }
+    }
+
+    /// Rebuild the flat visible list from the tree structure using
+    /// stack-based traversal.
+    fn rebuild_visible(&mut self) {
+        self.visible.clear();
+        let mut stack = vec![self.root_id];
+
+        while let Some(id) = stack.pop() {
+            self.visible.push(id);
+            if let Some(node) = self.nodes.get(id) {
+                if node.expanded {
+                    // Push in reverse so first child is visited first
+                    for &child in node.children.iter().rev() {
+                        stack.push(child);
+                    }
+                }
+            }
+        }
+
+        let max = self.visible.len().saturating_sub(1);
+        self.selected = self.selected.min(max);
+        self.scroll_offset = self.scroll_offset.min(max);
+
+        self.visible_dirty = false;
+    }
 }
 
 #[cfg(test)]
@@ -625,5 +777,178 @@ mod tests {
             }
             _ => panic!("expected ChildrenLoaded update"),
         }
+    }
+
+    // --- Step 1.6-1.8 tests ---
+
+    #[test]
+    fn test_rebuild_visible_all_expanded() {
+        let (mut tree, root_id, src_id, main_id, cargo_id) = build_test_tree();
+        let lib_id = tree.nodes[src_id].children[1];
+
+        tree.rebuild_visible();
+
+        // Expected DFS order: root, src, main.rs, lib.rs, Cargo.toml
+        assert_eq!(tree.visible.len(), 5);
+        assert_eq!(tree.visible[0], root_id);
+        assert_eq!(tree.visible[1], src_id);
+        assert_eq!(tree.visible[2], main_id);
+        assert_eq!(tree.visible[3], lib_id);
+        assert_eq!(tree.visible[4], cargo_id);
+    }
+
+    #[test]
+    fn test_rebuild_visible_collapsed_dir() {
+        let (mut tree, root_id, src_id, _, cargo_id) = build_test_tree();
+
+        tree.nodes[src_id].expanded = false;
+        tree.rebuild_visible();
+
+        // src children hidden: root, src, Cargo.toml
+        assert_eq!(tree.visible.len(), 3);
+        assert_eq!(tree.visible[0], root_id);
+        assert_eq!(tree.visible[1], src_id);
+        assert_eq!(tree.visible[2], cargo_id);
+    }
+
+    #[test]
+    fn test_rebuild_visible_clamps_selection() {
+        let (mut tree, _, src_id, _, _) = build_test_tree();
+
+        tree.selected = 10; // way past end
+        tree.nodes[src_id].expanded = false;
+        tree.rebuild_visible();
+
+        // 3 items visible, selected clamped to 2
+        assert_eq!(tree.selected, 2);
+    }
+
+    #[test]
+    fn test_process_updates_children_loaded() {
+        let (mut tree, root_id, _, _, _) = build_test_tree();
+        let config = FileTreeConfig::default();
+
+        // Send a ChildrenLoaded update for root with new entries
+        let tx = tree.update_tx();
+        tx.try_send(FileTreeUpdate::ChildrenLoaded {
+            parent: root_id,
+            entries: vec![
+                ("docs".into(), NodeKind::Directory),
+                ("README.md".into(), NodeKind::File),
+            ],
+        })
+        .unwrap();
+
+        tree.process_updates(&config);
+
+        let root = &tree.nodes[root_id];
+        assert_eq!(root.children.len(), 2);
+        assert!(root.loaded);
+
+        let first_child = &tree.nodes[root.children[0]];
+        assert_eq!(first_child.name, "docs");
+        assert_eq!(first_child.kind, NodeKind::Directory);
+        assert_eq!(first_child.depth, 1);
+        assert_eq!(first_child.parent, Some(root_id));
+
+        let second_child = &tree.nodes[root.children[1]];
+        assert_eq!(second_child.name, "README.md");
+        assert_eq!(second_child.kind, NodeKind::File);
+    }
+
+    #[test]
+    fn test_process_updates_replaces_old_children() {
+        let (mut tree, root_id, src_id, main_id, cargo_id) = build_test_tree();
+        let config = FileTreeConfig::default();
+
+        // Replace root's children
+        let tx = tree.update_tx();
+        tx.try_send(FileTreeUpdate::ChildrenLoaded {
+            parent: root_id,
+            entries: vec![("new_file.txt".into(), NodeKind::File)],
+        })
+        .unwrap();
+
+        tree.process_updates(&config);
+
+        // Old children (src, Cargo.toml) should be removed
+        assert!(tree.nodes.get(src_id).is_none());
+        assert!(tree.nodes.get(cargo_id).is_none());
+        // main_id was a child of src, but we only remove direct children
+        // (main_id will be orphaned, which is acceptable — it won't appear in visible)
+        assert_eq!(tree.nodes[root_id].children.len(), 1);
+    }
+
+    #[test]
+    fn test_git_status_file_lookup() {
+        let (mut tree, _, _, main_id, _) = build_test_tree();
+
+        tree.git_status_map
+            .insert(PathBuf::from("/tmp/project/src/main.rs"), GitStatus::Modified);
+
+        assert_eq!(tree.git_status_for(main_id), GitStatus::Modified);
+    }
+
+    #[test]
+    fn test_git_status_directory_uses_cache() {
+        let (mut tree, _, src_id, _, _) = build_test_tree();
+
+        tree.git_status_map
+            .insert(PathBuf::from("/tmp/project/src/main.rs"), GitStatus::Modified);
+        tree.rebuild_dir_status_cache();
+
+        // src directory should show Modified (worst descendant)
+        assert_eq!(tree.git_status_for(src_id), GitStatus::Modified);
+    }
+
+    #[test]
+    fn test_git_status_dir_worst_of_descendants() {
+        let (mut tree, _, src_id, _, _) = build_test_tree();
+
+        tree.git_status_map
+            .insert(PathBuf::from("/tmp/project/src/main.rs"), GitStatus::Untracked);
+        tree.git_status_map
+            .insert(PathBuf::from("/tmp/project/src/lib.rs"), GitStatus::Conflict);
+        tree.rebuild_dir_status_cache();
+
+        // src should show Conflict (higher severity than Untracked)
+        assert_eq!(tree.git_status_for(src_id), GitStatus::Conflict);
+    }
+
+    #[test]
+    fn test_git_status_clean_file() {
+        let (tree, _, _, main_id, _) = build_test_tree();
+        // No git status entries → clean
+        assert_eq!(tree.git_status_for(main_id), GitStatus::Clean);
+    }
+
+    #[test]
+    fn test_git_status_untracked_inherits_to_children() {
+        let (mut tree, _, src_id, main_id, _) = build_test_tree();
+
+        // Mark the src directory itself as untracked
+        tree.git_status_map
+            .insert(PathBuf::from("/tmp/project/src"), GitStatus::Untracked);
+
+        // main.rs should inherit Untracked from its parent
+        assert_eq!(tree.git_status_for(main_id), GitStatus::Untracked);
+    }
+
+    #[test]
+    fn test_process_updates_git_status() {
+        let (mut tree, root_id, _, _, _) = build_test_tree();
+        let config = FileTreeConfig::default();
+
+        let tx = tree.update_tx();
+        tx.try_send(FileTreeUpdate::GitStatus(vec![
+            (PathBuf::from("/tmp/project/src/main.rs"), GitStatus::Modified),
+        ]))
+        .unwrap();
+
+        tree.process_updates(&config);
+
+        assert!(tree.git_status_map.contains_key(&PathBuf::from("/tmp/project/src/main.rs")));
+        // Dir cache should be rebuilt
+        assert!(tree.dir_status_cache.contains_key(&PathBuf::from("/tmp/project/src")));
     }
 }
