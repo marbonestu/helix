@@ -6,6 +6,7 @@ pub mod clipboard;
 pub mod document;
 pub mod editor;
 pub mod events;
+pub mod file_tree;
 pub mod expansion;
 pub mod graphics;
 pub mod gutter;
