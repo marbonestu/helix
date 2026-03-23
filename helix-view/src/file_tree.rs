@@ -608,9 +608,14 @@ impl FileTree {
             };
 
             if !node.loaded && node.kind == NodeKind::Directory {
-                self.spawn_load_children(current_id, config);
-                if let Some(n) = self.nodes.get_mut(current_id) {
-                    n.expanded = true;
+                // Only spawn a load if we haven't already (expanded but
+                // not loaded means a load is already in flight from a
+                // previous call or from toggle_expand).
+                if !node.expanded {
+                    self.spawn_load_children(current_id, config);
+                    if let Some(n) = self.nodes.get_mut(current_id) {
+                        n.expanded = true;
+                    }
                 }
                 self.pending_reveal = Some(path.to_path_buf());
                 return;
@@ -679,7 +684,11 @@ impl FileTree {
 
     /// Queue a follow-current-file reveal. Only sets the deadline once so
     /// repeated calls (e.g. every render frame) don't push it forward forever.
+    /// Skips queueing while a pending_reveal is still being resolved.
     pub fn request_follow(&mut self, path: PathBuf) {
+        if self.pending_reveal.is_some() {
+            return;
+        }
         self.follow_target = Some(path);
         if self.follow_deadline.is_none() {
             self.follow_deadline = Some(Instant::now() + Self::FOLLOW_DEBOUNCE);
@@ -1308,20 +1317,20 @@ mod tests {
         let mut tree = FileTree::new(dir.path().to_path_buf()).unwrap();
         let config = FileTreeConfig::default();
 
-        // Root is not loaded yet — reveal should spawn async load and set pending_reveal
+        // Trigger async root load (as toggle_file_tree does in real usage)
+        tree.load_root(&config);
+
+        // Root not loaded yet — reveal should set pending_reveal and wait
         tree.reveal_path(&sub.join("file.txt"), &config);
         assert!(tree.pending_reveal.is_some());
 
-        // Wait for the background load to complete
+        // Wait for root load to complete
         tokio::time::sleep(Duration::from_millis(500)).await;
-
-        // Process the channel update, which retries the pending reveal
         tree.process_updates(&config, None);
 
-        // Root should now be loaded and sub should be pending
         assert!(tree.nodes[tree.root_id].loaded);
 
-        // Wait for sub directory load
+        // Wait for sub directory load (spawned by pending_reveal retry)
         tokio::time::sleep(Duration::from_millis(500)).await;
         tree.process_updates(&config, None);
 
