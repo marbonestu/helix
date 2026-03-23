@@ -272,6 +272,11 @@ impl FileTree {
         self.visible.get(self.selected).copied()
     }
 
+    pub fn move_to(&mut self, pos: usize) {
+        self.selected = pos.min(self.visible.len().saturating_sub(1));
+        self.ensure_selected_visible();
+    }
+
     pub fn toggle_expand(&mut self, id: NodeId, config: &FileTreeConfig) {
         let Some(node) = self.nodes.get_mut(id) else {
             return;

@@ -1426,6 +1426,100 @@ impl EditorView {
             false
         }
     }
+
+    fn handle_file_tree_key(
+        &mut self,
+        key: KeyEvent,
+        cx: &mut commands::Context,
+    ) -> EventResult {
+        use helix_view::file_tree::NodeKind;
+
+        let config = cx.editor.config().file_tree.clone();
+
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.move_down();
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.move_up();
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    if let Some(id) = tree.selected_id() {
+                        let node = tree.nodes().get(id);
+                        if let Some(node) = node {
+                            if node.kind == NodeKind::Directory && node.expanded {
+                                tree.toggle_expand(id, &config);
+                            } else if let Some(parent_id) = node.parent {
+                                // Move to parent
+                                if let Some(pos) =
+                                    tree.visible().iter().position(|&vid| vid == parent_id)
+                                {
+                                    tree.move_to(pos);
+                                }
+                            }
+                        }
+                    }
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    if let Some(id) = tree.selected_id() {
+                        let node = tree.nodes().get(id);
+                        match node.map(|n| n.kind) {
+                            Some(NodeKind::Directory) => {
+                                tree.toggle_expand(id, &config);
+                            }
+                            Some(NodeKind::File) => {
+                                let path = tree.node_path(id);
+                                cx.callback.push(Box::new(move |_compositor, cx| {
+                                    if let Err(e) =
+                                        cx.editor.open(&path, helix_view::editor::Action::Load)
+                                    {
+                                        cx.editor.set_error(format!("{}", e));
+                                    } else {
+                                        cx.editor.file_tree_focused = false;
+                                    }
+                                }));
+                            }
+                            None => {}
+                        }
+                    }
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('q') | KeyCode::Esc => {
+                cx.editor.file_tree_focused = false;
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('r') => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.refresh(&config);
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('g') => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.jump_to_top();
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('G') => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.jump_to_bottom();
+                }
+                EventResult::Consumed(None)
+            }
+            _ => EventResult::Ignored(None),
+        }
+    }
 }
 
 impl Component for EditorView {
@@ -1474,6 +1568,27 @@ impl Component for EditorView {
 
                 // clear status
                 cx.editor.status_msg = None;
+
+                // Intercept keys when file tree is focused
+                if cx.editor.file_tree_focused {
+                    let result = self.handle_file_tree_key(key, &mut cx);
+                    if let EventResult::Consumed(_) = &result {
+                        // Collect any callbacks pushed by file tree handlers
+                        let callbacks = take(&mut cx.callback);
+                        let callback = if callbacks.is_empty() {
+                            None
+                        } else {
+                            let callback: crate::compositor::Callback =
+                                Box::new(move |compositor, cx| {
+                                    for callback in callbacks {
+                                        callback(compositor, cx)
+                                    }
+                                });
+                            Some(callback)
+                        };
+                        return EventResult::Consumed(callback);
+                    }
+                }
 
                 let mode = cx.editor.mode();
 
