@@ -1615,6 +1615,34 @@ impl Component for EditorView {
             editor_area = editor_area.clip_top(1);
         }
 
+        // File tree sidebar — carve out space before resize
+        let sidebar_width = if cx.editor.file_tree_visible {
+            config
+                .file_tree
+                .width
+                .min(editor_area.width.saturating_sub(10) / 3)
+        } else {
+            0
+        };
+        let sidebar_area = if sidebar_width > 0 {
+            let sa = Rect::new(
+                editor_area.x,
+                editor_area.y,
+                sidebar_width,
+                editor_area.height,
+            );
+            // +1 for separator column (drawn inside sidebar_area)
+            editor_area = editor_area.clip_left(sidebar_width);
+            sa
+        } else {
+            Rect::default()
+        };
+
+        // Process pending file tree updates before rendering
+        if let Some(ref mut tree) = cx.editor.file_tree {
+            tree.process_updates(&config.file_tree);
+        }
+
         // if the terminal size suddenly changed, we need to trigger a resize
         cx.editor.resize(editor_area);
 
@@ -1625,6 +1653,19 @@ impl Component for EditorView {
         for (view, is_focused) in cx.editor.tree.views() {
             let doc = cx.editor.document(view.doc).unwrap();
             self.render_view(cx.editor, doc, view, area, surface, is_focused);
+        }
+
+        // Render file tree sidebar
+        if sidebar_width > 0 {
+            if let Some(ref tree) = cx.editor.file_tree {
+                super::file_tree::render_file_tree(
+                    tree,
+                    sidebar_area,
+                    surface,
+                    cx.editor,
+                    cx.editor.file_tree_focused,
+                );
+            }
         }
 
         if config.auto_info {

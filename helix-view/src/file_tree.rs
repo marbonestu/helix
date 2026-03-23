@@ -229,6 +229,18 @@ impl FileTree {
         self.update_tx.clone()
     }
 
+    pub fn nodes(&self) -> &SlotMap<NodeId, FileNode> {
+        &self.nodes
+    }
+
+    pub fn visible(&self) -> &[NodeId] {
+        &self.visible
+    }
+
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
+
     /// Reconstruct the full filesystem path for a node by walking parent
     /// pointers up to the root.
     pub fn node_path(&self, id: NodeId) -> PathBuf {
