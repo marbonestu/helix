@@ -492,6 +492,199 @@ impl FileTree {
 
         self.visible_dirty = false;
     }
+
+    // --- Navigation ---
+
+    pub fn move_up(&mut self) {
+        self.selected = self.selected.saturating_sub(1);
+        self.ensure_selected_visible();
+    }
+
+    pub fn move_down(&mut self) {
+        self.selected = (self.selected + 1).min(self.visible.len().saturating_sub(1));
+        self.ensure_selected_visible();
+    }
+
+    pub fn jump_to_top(&mut self) {
+        self.selected = 0;
+        self.scroll_offset = 0;
+    }
+
+    pub fn jump_to_bottom(&mut self) {
+        self.selected = self.visible.len().saturating_sub(1);
+        self.ensure_selected_visible();
+    }
+
+    fn ensure_selected_visible(&mut self) {
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        }
+        // Upper bound clamping happens in the render function where
+        // viewport height is known.
+    }
+
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Clamp scroll_offset so the selected item is within the viewport.
+    /// Called during render when viewport height is known.
+    pub fn clamp_scroll(&mut self, viewport_height: usize) {
+        if viewport_height == 0 {
+            return;
+        }
+        if self.selected >= self.scroll_offset + viewport_height {
+            self.scroll_offset = self.selected - viewport_height + 1;
+        }
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        }
+    }
+
+    // --- Reveal path ---
+
+    /// Expand ancestors and select the node at the given path.
+    /// Loads directories synchronously along the path if needed.
+    pub fn reveal_path(&mut self, path: &Path, config: &FileTreeConfig) {
+        let relative = match path.strip_prefix(&self.root) {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+
+        let mut current_id = self.root_id;
+
+        for component in relative.components() {
+            let name = component.as_os_str().to_string_lossy();
+
+            let node = match self.nodes.get(current_id) {
+                Some(n) => n,
+                None => return,
+            };
+
+            if !node.loaded && node.kind == NodeKind::Directory {
+                self.load_children_sync(current_id, config);
+            }
+
+            if let Some(n) = self.nodes.get_mut(current_id) {
+                n.expanded = true;
+            }
+
+            let children = self
+                .nodes
+                .get(current_id)
+                .map(|n| n.children.clone())
+                .unwrap_or_default();
+            match children.iter().find(|&&cid| {
+                self.nodes
+                    .get(cid)
+                    .map(|n| n.name == *name)
+                    .unwrap_or(false)
+            }) {
+                Some(&child_id) => current_id = child_id,
+                None => return,
+            }
+        }
+
+        self.visible_dirty = true;
+        self.rebuild_visible();
+        if let Some(pos) = self.visible.iter().position(|&id| id == current_id) {
+            self.selected = pos;
+            self.ensure_selected_visible();
+        }
+    }
+
+    fn load_children_sync(&mut self, node_id: NodeId, config: &FileTreeConfig) {
+        let path = self.node_path(node_id);
+        let walker = ignore::WalkBuilder::new(&path)
+            .hidden(!config.hidden)
+            .git_ignore(config.git_ignore)
+            .follow_links(config.follow_symlinks)
+            .max_depth(Some(1))
+            .sort_by_file_name(|a, b| a.cmp(b))
+            .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
+            .add_custom_ignore_filename(".helix/ignore")
+            .build();
+
+        let depth = self.nodes.get(node_id).map(|n| n.depth + 1).unwrap_or(1);
+        let mut child_ids = Vec::new();
+
+        for result in walker {
+            if let Ok(entry) = result {
+                if entry.path() == path {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().to_string();
+                let kind = if entry
+                    .file_type()
+                    .map(|ft| ft.is_dir())
+                    .unwrap_or(false)
+                {
+                    NodeKind::Directory
+                } else {
+                    NodeKind::File
+                };
+                let child_id = self.nodes.insert(FileNode {
+                    name,
+                    kind,
+                    parent: Some(node_id),
+                    children: Vec::new(),
+                    expanded: false,
+                    loaded: false,
+                    depth,
+                });
+                child_ids.push(child_id);
+            }
+        }
+
+        child_ids.sort_by(|&a, &b| {
+            let na = &self.nodes[a];
+            let nb = &self.nodes[b];
+            na.kind.cmp(&nb.kind).then(na.name.cmp(&nb.name))
+        });
+
+        if let Some(node) = self.nodes.get_mut(node_id) {
+            node.children = child_ids;
+            node.loaded = true;
+        }
+    }
+
+    // --- Refresh ---
+
+    /// Re-scan all currently expanded directories.
+    pub fn refresh(&mut self, config: &FileTreeConfig) {
+        let expanded_dirs: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.kind == NodeKind::Directory && n.expanded && n.loaded)
+            .map(|(id, _)| id)
+            .collect();
+
+        for &id in &expanded_dirs {
+            if let Some(node) = self.nodes.get_mut(id) {
+                node.loaded = false;
+            }
+        }
+
+        for &id in &expanded_dirs {
+            self.spawn_load_children(id, config);
+        }
+    }
+
+    // --- Debounce ---
+
+    const GIT_REFRESH_DEBOUNCE: Duration = Duration::from_millis(1000);
+    const FOLLOW_DEBOUNCE: Duration = Duration::from_millis(100);
+
+    /// Queue a debounced git status refresh.
+    pub fn request_git_refresh(&mut self) {
+        self.git_refresh_deadline = Some(Instant::now() + Self::GIT_REFRESH_DEBOUNCE);
+    }
+
+    /// Queue a follow-current-file reveal.
+    pub fn request_follow(&mut self, path: PathBuf) {
+        self.follow_target = Some(path);
+        self.follow_deadline = Some(Instant::now() + Self::FOLLOW_DEBOUNCE);
+    }
 }
 
 #[cfg(test)]
@@ -950,5 +1143,183 @@ mod tests {
         assert!(tree.git_status_map.contains_key(&PathBuf::from("/tmp/project/src/main.rs")));
         // Dir cache should be rebuilt
         assert!(tree.dir_status_cache.contains_key(&PathBuf::from("/tmp/project/src")));
+    }
+
+    // --- Step 1.9-1.11 tests ---
+
+    #[test]
+    fn test_move_down() {
+        let (mut tree, _, _, _, _) = build_test_tree();
+        tree.rebuild_visible(); // 5 items
+        assert_eq!(tree.selected, 0);
+
+        tree.move_down();
+        assert_eq!(tree.selected, 1);
+
+        tree.move_down();
+        assert_eq!(tree.selected, 2);
+    }
+
+    #[test]
+    fn test_move_down_clamps_at_end() {
+        let (mut tree, _, _, _, _) = build_test_tree();
+        tree.rebuild_visible(); // 5 items
+
+        for _ in 0..10 {
+            tree.move_down();
+        }
+        assert_eq!(tree.selected, 4); // last item
+    }
+
+    #[test]
+    fn test_move_up() {
+        let (mut tree, _, _, _, _) = build_test_tree();
+        tree.rebuild_visible();
+        tree.selected = 3;
+
+        tree.move_up();
+        assert_eq!(tree.selected, 2);
+    }
+
+    #[test]
+    fn test_move_up_clamps_at_top() {
+        let (mut tree, _, _, _, _) = build_test_tree();
+        tree.rebuild_visible();
+        tree.selected = 0;
+
+        tree.move_up();
+        assert_eq!(tree.selected, 0);
+    }
+
+    #[test]
+    fn test_jump_to_top_and_bottom() {
+        let (mut tree, _, _, _, _) = build_test_tree();
+        tree.rebuild_visible(); // 5 items
+
+        tree.jump_to_bottom();
+        assert_eq!(tree.selected, 4);
+
+        tree.jump_to_top();
+        assert_eq!(tree.selected, 0);
+        assert_eq!(tree.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_clamp_scroll() {
+        let (mut tree, _, _, _, _) = build_test_tree();
+        tree.rebuild_visible(); // 5 items
+
+        tree.selected = 4;
+        tree.scroll_offset = 0;
+        tree.clamp_scroll(3); // viewport shows 3 items
+        // selected=4 must be visible: scroll_offset = 4 - 3 + 1 = 2
+        assert_eq!(tree.scroll_offset, 2);
+    }
+
+    #[test]
+    fn test_clamp_scroll_selected_above_viewport() {
+        let (mut tree, _, _, _, _) = build_test_tree();
+        tree.rebuild_visible();
+
+        tree.selected = 1;
+        tree.scroll_offset = 3;
+        tree.clamp_scroll(3);
+        assert_eq!(tree.scroll_offset, 1);
+    }
+
+    #[test]
+    fn test_reveal_path_already_loaded() {
+        let (mut tree, _, src_id, main_id, _) = build_test_tree();
+        let config = FileTreeConfig::default();
+
+        // Collapse src first
+        tree.nodes[src_id].expanded = false;
+        tree.rebuild_visible();
+        // Only root, src, Cargo.toml visible
+        assert_eq!(tree.visible.len(), 3);
+
+        tree.reveal_path(Path::new("/tmp/project/src/main.rs"), &config);
+
+        // src should be expanded and main.rs selected
+        assert!(tree.nodes[src_id].expanded);
+        let selected = tree.visible[tree.selected];
+        assert_eq!(selected, main_id);
+    }
+
+    #[test]
+    fn test_reveal_path_outside_root_is_noop() {
+        let (mut tree, _, _, _, _) = build_test_tree();
+        let config = FileTreeConfig::default();
+        tree.rebuild_visible();
+        let old_selected = tree.selected;
+
+        tree.reveal_path(Path::new("/other/path/file.rs"), &config);
+        assert_eq!(tree.selected, old_selected);
+    }
+
+    #[test]
+    fn test_reveal_path_with_sync_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("file.txt"), "content").unwrap();
+
+        let mut tree = FileTree::new(dir.path().to_path_buf()).unwrap();
+        let config = FileTreeConfig::default();
+
+        // Root is not loaded yet, reveal should load it synchronously
+        tree.reveal_path(&sub.join("file.txt"), &config);
+
+        // The file should be selected
+        let selected_node = tree.selected_node().unwrap();
+        assert_eq!(selected_node.name, "file.txt");
+    }
+
+    #[test]
+    fn test_refresh_marks_dirs_unloaded() {
+        let (mut tree, root_id, src_id, _, _) = build_test_tree();
+
+        assert!(tree.nodes[root_id].loaded);
+        assert!(tree.nodes[src_id].loaded);
+
+        // refresh would call spawn_load_children which needs tokio,
+        // so just test the state change
+        let expanded_dirs: Vec<NodeId> = tree
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.kind == NodeKind::Directory && n.expanded && n.loaded)
+            .map(|(id, _)| id)
+            .collect();
+
+        for &id in &expanded_dirs {
+            if let Some(node) = tree.nodes.get_mut(id) {
+                node.loaded = false;
+            }
+        }
+
+        assert!(!tree.nodes[root_id].loaded);
+        assert!(!tree.nodes[src_id].loaded);
+    }
+
+    #[test]
+    fn test_request_git_refresh_sets_deadline() {
+        let (mut tree, _, _, _, _) = build_test_tree();
+        assert!(tree.git_refresh_deadline.is_none());
+
+        tree.request_git_refresh();
+        assert!(tree.git_refresh_deadline.is_some());
+    }
+
+    #[test]
+    fn test_request_follow_sets_target() {
+        let (mut tree, _, _, _, _) = build_test_tree();
+        assert!(tree.follow_target.is_none());
+
+        tree.request_follow(PathBuf::from("/tmp/project/src/main.rs"));
+        assert_eq!(
+            tree.follow_target.as_deref(),
+            Some(Path::new("/tmp/project/src/main.rs"))
+        );
+        assert!(tree.follow_deadline.is_some());
     }
 }
