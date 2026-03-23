@@ -1198,6 +1198,64 @@ impl EditorView {
             ..
         } = *event;
 
+        // Check if click is in the file tree sidebar area
+        if config.file_tree.width > 0 && cxt.editor.file_tree_visible {
+            let sidebar_width = config.file_tree.width;
+            if column < sidebar_width {
+                match kind {
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        cxt.editor.file_tree_focused = true;
+
+                        // Calculate which node was clicked
+                        if let Some(ref mut tree) = cxt.editor.file_tree {
+                            // Approximate: row offset from top of editor area
+                            let tree_row = row.saturating_sub(
+                                if matches!(config.bufferline,
+                                    helix_view::editor::BufferLine::Always)
+                                    || (matches!(config.bufferline,
+                                        helix_view::editor::BufferLine::Multiple)
+                                        && cxt.editor.documents.len() > 1)
+                                {
+                                    1
+                                } else {
+                                    0
+                                },
+                            );
+                            let clicked_idx = tree.scroll_offset() + tree_row as usize;
+                            if clicked_idx < tree.visible().len() {
+                                tree.move_to(clicked_idx);
+                            }
+                        }
+                        return EventResult::Consumed(None);
+                    }
+                    MouseEventKind::ScrollUp => {
+                        if let Some(ref mut tree) = cxt.editor.file_tree {
+                            for _ in 0..3 {
+                                tree.move_up();
+                            }
+                        }
+                        return EventResult::Consumed(None);
+                    }
+                    MouseEventKind::ScrollDown => {
+                        if let Some(ref mut tree) = cxt.editor.file_tree {
+                            for _ in 0..3 {
+                                tree.move_down();
+                            }
+                        }
+                        return EventResult::Consumed(None);
+                    }
+                    _ => {}
+                }
+            } else {
+                // Click in editor area: unfocus sidebar
+                if cxt.editor.file_tree_focused
+                    && matches!(kind, MouseEventKind::Down(MouseButton::Left))
+                {
+                    cxt.editor.file_tree_focused = false;
+                }
+            }
+        }
+
         let pos_and_view = |editor: &Editor, row, column, ignore_virtual_text| {
             editor.tree.views().find_map(|(view, _focus)| {
                 view.pos_at_screen_coords(
@@ -1755,6 +1813,20 @@ impl Component for EditorView {
 
         // Process pending file tree updates before rendering
         let diff_providers = cx.editor.diff_providers.clone();
+
+        // Follow current file: queue a debounced reveal
+        if config.file_tree.follow_current_file && cx.editor.file_tree_visible {
+            let current_path = {
+                let (_view, doc) = current!(cx.editor);
+                doc.path().cloned()
+            };
+            if let Some(path) = current_path {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.request_follow(path);
+                }
+            }
+        }
+
         if let Some(ref mut tree) = cx.editor.file_tree {
             tree.process_updates(&config.file_tree, Some(&diff_providers));
         }
@@ -1773,6 +1845,10 @@ impl Component for EditorView {
 
         // Render file tree sidebar
         if sidebar_width > 0 {
+            // Clamp scroll to viewport before rendering
+            if let Some(ref mut tree) = cx.editor.file_tree {
+                tree.clamp_scroll(sidebar_area.height as usize);
+            }
             if let Some(ref tree) = cx.editor.file_tree {
                 super::file_tree::render_file_tree(
                     tree,
