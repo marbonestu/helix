@@ -2058,4 +2058,45 @@ mod tests {
         let dir = tree.selected_dir_path().unwrap();
         assert_eq!(dir, PathBuf::from("/tmp/project/src"));
     }
+
+    #[test]
+    fn test_selection_clamped_after_node_removal() {
+        let (mut tree, root_id, src_id, _main_id, _cargo_id) = build_test_tree();
+        tree.rebuild_visible(); // 5 items: root, src, main.rs, lib.rs, Cargo.toml
+
+        // Select Cargo.toml (last item, index 4)
+        tree.selected = 4;
+
+        // Simulate removal of src and its children — collapse src first so
+        // only root, src, Cargo.toml are visible (3 items, max index 2).
+        tree.nodes[src_id].expanded = false;
+        tree.rebuild_visible();
+
+        // selected was 4, max is now 2 — must be clamped
+        assert_eq!(tree.selected, 2);
+        let _ = root_id;
+    }
+
+    #[test]
+    fn test_rename_noop_returns_none() {
+        let (mut tree, _, _, main_id, _) = build_test_tree();
+        tree.start_rename(main_id);
+        // Input is pre-filled with "main.rs"; confirming without change is a no-op
+        assert_eq!(tree.prompt_input, "main.rs");
+        let result = tree.prompt_confirm();
+        assert!(result.is_none());
+        assert!(matches!(tree.prompt_mode, PromptMode::None));
+    }
+
+    #[test]
+    fn test_delete_confirm_is_dir_flag() {
+        let (mut tree, _, src_id, main_id, _) = build_test_tree();
+
+        tree.start_delete_confirm(src_id);
+        assert!(matches!(tree.prompt_mode, PromptMode::DeleteConfirm { is_dir: true, .. }));
+
+        tree.prompt_cancel();
+        tree.start_delete_confirm(main_id);
+        assert!(matches!(tree.prompt_mode, PromptMode::DeleteConfirm { is_dir: false, .. }));
+    }
 }
