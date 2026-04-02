@@ -47,6 +47,18 @@
 "diff.delta" = "yellow"
 "diff.minus" = "red"
 
+"ui.sidebar" = { bg = "black" }
+"ui.sidebar.selected" = { modifiers = ["reversed"] }
+"ui.sidebar.file" = { fg = "white" }
+"ui.sidebar.directory" = { fg = "blue", modifiers = ["bold"] }
+"ui.sidebar.separator" = { fg = "gray" }
+"ui.sidebar.icon" = { fg = "white" }
+"ui.sidebar.icon.directory" = { fg = "blue" }
+"ui.sidebar.git.modified" = { fg = "yellow" }
+"ui.sidebar.git.untracked" = { fg = "green" }
+"ui.sidebar.git.deleted" = { fg = "red" }
+"ui.sidebar.git.conflict" = { fg = "red", modifiers = ["bold"] }
+
 "diagnostic" = { modifiers = ["underlined"] }
 "ui.gutter" = { bg = "black" }
 "info" = "blue"

@@ -144,16 +144,50 @@ pub fn render_file_tree(
         // Git status indicator at end of line (if space permits)
         let git_status = tree.git_status_for(node_id);
         if git_status != GitStatus::Clean {
-            let (symbol, git_style_name) = match git_status {
-                GitStatus::Modified => ("●", "ui.sidebar.git.modified"),
-                GitStatus::Untracked => ("◌", "ui.sidebar.git.untracked"),
-                GitStatus::Deleted => ("✕", "ui.sidebar.git.deleted"),
-                GitStatus::Conflict => ("⚠", "ui.sidebar.git.conflict"),
-                GitStatus::Renamed => ("→", "ui.sidebar.git.modified"),
+            let (symbol, git_style) = match git_status {
+                GitStatus::Modified => (
+                    "●",
+                    theme
+                        .try_get("ui.sidebar.git.modified")
+                        .or_else(|| theme.try_get("warning"))
+                        .or_else(|| theme.try_get("diff.delta"))
+                        .unwrap_or(base_style),
+                ),
+                GitStatus::Untracked => (
+                    "◌",
+                    theme
+                        .try_get("ui.sidebar.git.untracked")
+                        .or_else(|| theme.try_get("hint"))
+                        .or_else(|| theme.try_get("diff.plus"))
+                        .unwrap_or(base_style),
+                ),
+                GitStatus::Deleted => (
+                    "✕",
+                    theme
+                        .try_get("ui.sidebar.git.deleted")
+                        .or_else(|| theme.try_get("error"))
+                        .or_else(|| theme.try_get("diff.minus"))
+                        .unwrap_or(base_style),
+                ),
+                GitStatus::Conflict => (
+                    "⚠",
+                    theme
+                        .try_get("ui.sidebar.git.conflict")
+                        .or_else(|| theme.try_get("error"))
+                        .or_else(|| theme.try_get("diff.minus"))
+                        .unwrap_or(base_style),
+                ),
+                GitStatus::Renamed => (
+                    "→",
+                    theme
+                        .try_get("ui.sidebar.git.modified")
+                        .or_else(|| theme.try_get("warning"))
+                        .or_else(|| theme.try_get("diff.delta"))
+                        .unwrap_or(base_style),
+                ),
                 GitStatus::Clean => unreachable!(),
             };
 
-            let git_style = theme.try_get(git_style_name).unwrap_or(base_style);
             let git_x = content_area.x + content_area.width - 2;
             if git_x > name_x {
                 surface.set_string(git_x, y, symbol, git_style);
