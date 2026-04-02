@@ -245,6 +245,81 @@ impl Tree {
         }
     }
 
+    /// Resize the focused view by transferring weight to/from an adjacent sibling.
+    ///
+    /// `direction` controls both the layout axis and which sibling absorbs the change:
+    /// `Right`/`Down` grow the focused view; `Left`/`Up` shrink it.
+    /// Walks up the tree to find the nearest ancestor container with the matching axis.
+    pub fn resize_view(&mut self, direction: Direction, amount: f64) {
+        let focus = self.focus;
+        let target_layout = match direction {
+            Direction::Left | Direction::Right => Layout::Vertical,
+            Direction::Up | Direction::Down => Layout::Horizontal,
+        };
+        let grows = matches!(direction, Direction::Right | Direction::Down);
+
+        let mut current = focus;
+        loop {
+            let parent_id = self.nodes[current].parent;
+            if parent_id == current {
+                return; // reached root — no matching container found
+            }
+            let container = match &self.nodes[parent_id].content {
+                Content::Container(c) => c,
+                _ => unreachable!(),
+            };
+            if container.layout == target_layout {
+                let pos = container
+                    .children
+                    .iter()
+                    .position(|&id| id == current)
+                    .unwrap();
+                let sibling_pos = if grows {
+                    if pos + 1 < container.children.len() {
+                        pos + 1
+                    } else {
+                        return; // no sibling to the right/below
+                    }
+                } else if pos > 0 {
+                    pos - 1
+                } else {
+                    return; // no sibling to the left/above
+                };
+
+                let container = self.container_mut(parent_id);
+                let max_transfer = container.weights[sibling_pos] - 0.1;
+                let transfer = amount.min(max_transfer);
+                if transfer <= 0.0 {
+                    return;
+                }
+                container.weights[pos] += transfer;
+                container.weights[sibling_pos] -= transfer;
+
+                self.recalculate();
+                return;
+            }
+            current = parent_id;
+        }
+    }
+
+    /// Reset all splits in the tree to equal sizes by setting every container's
+    /// weights to uniform 1.0 values, recursively.
+    pub fn equalize_splits(&mut self) {
+        self.equalize_recursive(self.root);
+        self.recalculate();
+    }
+
+    fn equalize_recursive(&mut self, node_id: ViewId) {
+        if let Content::Container(container) = &mut self.nodes[node_id].content {
+            let len = container.children.len();
+            container.weights = vec![1.0; len];
+            let children: Vec<ViewId> = container.children.clone();
+            for child in children {
+                self.equalize_recursive(child);
+            }
+        }
+    }
+
     fn remove_or_replace(&mut self, child: ViewId, replacement: Option<ViewId>) {
         let parent = self.nodes[child].parent;
 
