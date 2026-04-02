@@ -406,6 +406,9 @@ impl MappableCommand {
         file_explorer, "Open file explorer in workspace root",
         file_explorer_in_current_buffer_directory, "Open file explorer at current buffer's directory",
         file_explorer_in_current_directory, "Open file explorer at current working directory",
+        toggle_file_tree, "Toggle file tree sidebar",
+        focus_file_tree, "Focus file tree sidebar",
+        reveal_in_file_tree, "Reveal current file in tree",
         code_action, "Perform code action",
         buffer_picker, "Open buffer picker",
         jumplist_picker, "Open jumplist picker",
@@ -3217,6 +3220,47 @@ fn file_explorer_in_current_directory(cx: &mut Context) {
     }
 }
 
+fn toggle_file_tree(cx: &mut Context) {
+    let config = cx.editor.config();
+    if cx.editor.file_tree.is_none() {
+        let root = find_workspace().0;
+        match helix_view::file_tree::FileTree::new(root, &config.file_tree) {
+            Ok(mut tree) => {
+                if config.file_tree.git_status {
+                    tree.request_git_refresh();
+                }
+                cx.editor.file_tree = Some(tree);
+            }
+            Err(e) => {
+                cx.editor
+                    .set_error(format!("Failed to open file tree: {}", e));
+                return;
+            }
+        }
+    }
+    cx.editor.file_tree_visible = !cx.editor.file_tree_visible;
+    if cx.editor.file_tree_visible {
+        cx.editor.file_tree_focused = true;
+    } else {
+        cx.editor.file_tree_focused = false;
+    }
+}
+
+fn focus_file_tree(cx: &mut Context) {
+    if cx.editor.file_tree_visible {
+        cx.editor.file_tree_focused = !cx.editor.file_tree_focused;
+    }
+}
+
+fn reveal_in_file_tree(cx: &mut Context) {
+    let config = cx.editor.config().file_tree.clone();
+    if let Some(path) = doc!(cx.editor).path().cloned() {
+        if let Some(ref mut tree) = cx.editor.file_tree {
+            tree.reveal_path(&path, &config);
+        }
+    }
+}
+
 fn buffer_picker(cx: &mut Context) {
     let current = view!(cx.editor).doc;
 
@@ -5776,11 +5820,20 @@ fn rotate_view_reverse(cx: &mut Context) {
 }
 
 fn jump_view_right(cx: &mut Context) {
+    if cx.editor.file_tree_focused {
+        cx.editor.file_tree_focused = false;
+        return;
+    }
     cx.editor.focus_direction(tree::Direction::Right)
 }
 
 fn jump_view_left(cx: &mut Context) {
-    cx.editor.focus_direction(tree::Direction::Left)
+    let current_view = cx.editor.tree.focus;
+    if let Some(id) = cx.editor.tree.find_split_in_direction(current_view, tree::Direction::Left) {
+        cx.editor.focus(id);
+    } else if cx.editor.file_tree_visible {
+        cx.editor.file_tree_focused = true;
+    }
 }
 
 fn jump_view_up(cx: &mut Context) {

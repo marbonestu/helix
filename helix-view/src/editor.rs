@@ -366,6 +366,7 @@ pub struct Config {
     pub auto_info: bool,
     pub file_picker: FilePickerConfig,
     pub file_explorer: FileExplorerConfig,
+    pub file_tree: crate::file_tree::FileTreeConfig,
     /// Configuration of the statusline elements
     pub statusline: StatusLineConfig,
     /// Shape for cursor in each mode
@@ -1173,6 +1174,7 @@ impl Default for Config {
             auto_info: true,
             file_picker: FilePickerConfig::default(),
             file_explorer: FileExplorerConfig::default(),
+            file_tree: crate::file_tree::FileTreeConfig::default(),
             statusline: StatusLineConfig::default(),
             cursor_shape: CursorShapeConfig::default(),
             true_color: false,
@@ -1293,6 +1295,10 @@ pub struct Editor {
     pub last_completion: Option<CompleteAction>,
     pub last_cwd: Option<PathBuf>,
     pub dir_stack: VecDeque<PathBuf>,
+
+    pub file_tree: Option<crate::file_tree::FileTree>,
+    pub file_tree_visible: bool,
+    pub file_tree_focused: bool,
 
     pub exit_code: i32,
 
@@ -1437,6 +1443,9 @@ impl Editor {
             mouse_down_range: None,
             cursor_cache: CursorCache::default(),
             dir_stack: VecDeque::with_capacity(DIR_STACK_CAP),
+            file_tree: None,
+            file_tree_visible: false,
+            file_tree_focused: false,
         }
     }
 

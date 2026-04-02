@@ -3002,6 +3002,47 @@ fn noop(_cx: &mut compositor::Context, _args: Args, _event: PromptEvent) -> anyh
     Ok(())
 }
 
+fn tree_toggle(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    if cx.editor.file_tree.is_none() {
+        let root = find_workspace().0;
+        let config = cx.editor.config();
+        let tree = helix_view::file_tree::FileTree::new(root, &config.file_tree)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        cx.editor.file_tree = Some(tree);
+    }
+    cx.editor.file_tree_visible = !cx.editor.file_tree_visible;
+    if !cx.editor.file_tree_visible {
+        cx.editor.file_tree_focused = false;
+    }
+    Ok(())
+}
+
+fn tree_reveal(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let config = cx.editor.config().file_tree.clone();
+    if let Some(path) = doc!(cx.editor).path().cloned() {
+        if let Some(ref mut tree) = cx.editor.file_tree {
+            tree.reveal_path(&path, &config);
+        }
+    }
+    Ok(())
+}
+
 /// This command accepts a single boolean --skip-visible flag and no positionals.
 const BUFFER_CLOSE_OTHERS_SIGNATURE: Signature = Signature {
     positionals: (0, Some(0)),
@@ -4178,7 +4219,29 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         fun: untrust_workspace,
         completer: CommandCompleter::none(),
         signature: Signature { positionals: (0, None), ..Signature::DEFAULT },
-    }
+    },
+    TypableCommand {
+        name: "tree-toggle",
+        aliases: &[],
+        doc: "Toggle file tree sidebar visibility.",
+        fun: tree_toggle,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "tree-reveal",
+        aliases: &[],
+        doc: "Reveal current file in file tree.",
+        fun: tree_reveal,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
 ];
 
 pub static TYPABLE_COMMAND_MAP: Lazy<HashMap<&'static str, &'static TypableCommand>> =

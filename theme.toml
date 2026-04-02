@@ -81,6 +81,38 @@ tabstop = { modifiers = ["italic"], bg = "bossanova" }
 "ui.menu.selected" = { fg = "revolver", bg = "white" }
 "ui.menu.scroll" = { fg = "lavender", bg = "comet" }
 
+"ui.sidebar" = { bg = "revolver" }
+"ui.sidebar.selected" = { fg = "white", bg = "bossanova" }
+"ui.sidebar.file" = { fg = "lavender" }
+"ui.sidebar.directory" = { fg = "lilac", modifiers = ["bold"] }
+"ui.sidebar.separator" = { fg = "bossanova" }
+"ui.sidebar.git.modified" = { fg = "honey" }
+"ui.sidebar.git.untracked" = { fg = "mint" }
+"ui.sidebar.git.deleted" = { fg = "apricot" }
+"ui.sidebar.git.conflict" = { fg = "apricot", modifiers = ["bold"] }
+"ui.sidebar.icon" = { fg = "lavender" }
+"ui.sidebar.icon.directory" = { fg = "lilac" }
+"ui.sidebar.icon.rust" = { fg = "#dea584" }
+"ui.sidebar.icon.python" = { fg = "#3572a5" }
+"ui.sidebar.icon.javascript" = { fg = "#f1e05a" }
+"ui.sidebar.icon.typescript" = { fg = "#3178c6" }
+"ui.sidebar.icon.go" = { fg = "#00add8" }
+"ui.sidebar.icon.c" = { fg = "#555555" }
+"ui.sidebar.icon.cpp" = { fg = "#f34b7d" }
+"ui.sidebar.icon.java" = { fg = "#b07219" }
+"ui.sidebar.icon.ruby" = { fg = "#701516" }
+"ui.sidebar.icon.lua" = { fg = "#000080" }
+"ui.sidebar.icon.shell" = { fg = "mint" }
+"ui.sidebar.icon.nix" = { fg = "#7ebae4" }
+"ui.sidebar.icon.markdown" = { fg = "lavender" }
+"ui.sidebar.icon.json" = { fg = "honey" }
+"ui.sidebar.icon.toml" = { fg = "chamois" }
+"ui.sidebar.icon.yaml" = { fg = "#cb171e" }
+"ui.sidebar.icon.html" = { fg = "#e34c26" }
+"ui.sidebar.icon.css" = { fg = "#563d7c" }
+"ui.sidebar.icon.docker" = { fg = "#384d54" }
+"ui.sidebar.icon.git" = { fg = "#f05033" }
+
 "diagnostic.hint" = { underline = { color = "silver", style = "curl" } }
 "diagnostic.info" = { underline = { color = "delta", style = "curl" } }
 "diagnostic.warning" = { underline = { color = "lightning", style = "curl" } }

@@ -12,6 +12,7 @@ categories.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+
 [package.metadata.deb]
 # generate a .deb in target/debian/ with the command: cargo deb --no-build
 name = "helix"
@@ -117,3 +118,10 @@ name = "session_bdd"
 path = "tests/session_bdd.rs"
 harness = false
 required-features = ["integration"]
+
+[[test]]
+name = "file_tree_bdd"
+path = "tests/file_tree_bdd.rs"
+harness = false
+required-features = ["integration"]
+

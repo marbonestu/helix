@@ -1198,6 +1198,64 @@ impl EditorView {
             ..
         } = *event;
 
+        // Check if click is in the file tree sidebar area
+        if config.file_tree.width > 0 && cxt.editor.file_tree_visible {
+            let sidebar_width = config.file_tree.width;
+            if column < sidebar_width {
+                match kind {
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        cxt.editor.file_tree_focused = true;
+
+                        // Calculate which node was clicked
+                        if let Some(ref mut tree) = cxt.editor.file_tree {
+                            // Approximate: row offset from top of editor area
+                            let tree_row = row.saturating_sub(
+                                if matches!(config.bufferline,
+                                    helix_view::editor::BufferLine::Always)
+                                    || (matches!(config.bufferline,
+                                        helix_view::editor::BufferLine::Multiple)
+                                        && cxt.editor.documents.len() > 1)
+                                {
+                                    1
+                                } else {
+                                    0
+                                },
+                            );
+                            let clicked_idx = tree.scroll_offset() + tree_row as usize;
+                            if clicked_idx < tree.visible().len() {
+                                tree.move_to(clicked_idx);
+                            }
+                        }
+                        return EventResult::Consumed(None);
+                    }
+                    MouseEventKind::ScrollUp => {
+                        if let Some(ref mut tree) = cxt.editor.file_tree {
+                            for _ in 0..3 {
+                                tree.move_up();
+                            }
+                        }
+                        return EventResult::Consumed(None);
+                    }
+                    MouseEventKind::ScrollDown => {
+                        if let Some(ref mut tree) = cxt.editor.file_tree {
+                            for _ in 0..3 {
+                                tree.move_down();
+                            }
+                        }
+                        return EventResult::Consumed(None);
+                    }
+                    _ => {}
+                }
+            } else {
+                // Click in editor area: unfocus sidebar
+                if cxt.editor.file_tree_focused
+                    && matches!(kind, MouseEventKind::Down(MouseButton::Left))
+                {
+                    cxt.editor.file_tree_focused = false;
+                }
+            }
+        }
+
         let pos_and_view = |editor: &Editor, row, column, ignore_virtual_text| {
             editor.tree.views().find_map(|(view, _focus)| {
                 view.pos_at_screen_coords(
@@ -1426,6 +1484,214 @@ impl EditorView {
             false
         }
     }
+
+    fn handle_file_tree_key(
+        &mut self,
+        key: KeyEvent,
+        cx: &mut commands::Context,
+    ) -> EventResult {
+        use helix_view::file_tree::NodeKind;
+
+        let config = cx.editor.config().file_tree.clone();
+
+        // Handle search mode input first
+        let in_search = cx
+            .editor
+            .file_tree
+            .as_ref()
+            .map_or(false, |t| t.search_active());
+
+        if in_search {
+            match key.code {
+                KeyCode::Esc => {
+                    if let Some(ref mut tree) = cx.editor.file_tree {
+                        tree.search_cancel();
+                    }
+                    return EventResult::Consumed(None);
+                }
+                KeyCode::Enter => {
+                    if let Some(ref mut tree) = cx.editor.file_tree {
+                        tree.search_confirm();
+                    }
+                    return EventResult::Consumed(None);
+                }
+                KeyCode::Backspace => {
+                    if let Some(ref mut tree) = cx.editor.file_tree {
+                        tree.search_pop();
+                    }
+                    return EventResult::Consumed(None);
+                }
+                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if let Some(ref mut tree) = cx.editor.file_tree {
+                        tree.search_next();
+                    }
+                    return EventResult::Consumed(None);
+                }
+                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if let Some(ref mut tree) = cx.editor.file_tree {
+                        tree.search_prev();
+                    }
+                    return EventResult::Consumed(None);
+                }
+                KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if let Some(ref mut tree) = cx.editor.file_tree {
+                        tree.search_push(ch);
+                    }
+                    return EventResult::Consumed(None);
+                }
+                _ => return EventResult::Consumed(None),
+            }
+        }
+
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.move_down();
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.move_up();
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    if let Some(id) = tree.selected_id() {
+                        let node = tree.nodes().get(id);
+                        if let Some(node) = node {
+                            if node.kind == NodeKind::Directory && node.expanded {
+                                tree.toggle_expand(id, &config);
+                            } else if let Some(parent_id) = node.parent {
+                                // Move to parent
+                                if let Some(pos) =
+                                    tree.visible().iter().position(|&vid| vid == parent_id)
+                                {
+                                    tree.move_to(pos);
+                                }
+                            }
+                        }
+                    }
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
+                let open_path = if let Some(ref mut tree) = cx.editor.file_tree {
+                    if let Some(id) = tree.selected_id() {
+                        match tree.nodes().get(id).map(|n| n.kind) {
+                            Some(NodeKind::Directory) => {
+                                tree.toggle_expand(id, &config);
+                                None
+                            }
+                            Some(NodeKind::File) => Some(tree.node_path(id)),
+                            None => None,
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(path) = open_path {
+                    if let Err(e) =
+                        cx.editor.open(&path, helix_view::editor::Action::Replace)
+                    {
+                        cx.editor.set_error(format!("{}", e));
+                    } else {
+                        cx.editor.file_tree_focused = false;
+                    }
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('q') | KeyCode::Esc => {
+                cx.editor.file_tree_focused = false;
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('r') => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.refresh(&config);
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('g') => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.jump_to_top();
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('G') => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.jump_to_bottom();
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('/') => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.search_start();
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('n') => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.search_next();
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('N') => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.search_prev();
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    let half = (cx.editor.tree.area().height as usize) / 2;
+                    tree.page_up(half.max(1));
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    let half = (cx.editor.tree.area().height as usize) / 2;
+                    tree.page_down(half.max(1));
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    let page = cx.editor.tree.area().height as usize;
+                    tree.page_up(page.max(1));
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    let page = cx.editor.tree.area().height as usize;
+                    tree.page_down(page.max(1));
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.scroll_view_up();
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.scroll_view_down();
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                cx.editor.file_tree_focused = false;
+                EventResult::Ignored(None)
+            }
+            _ => EventResult::Ignored(None),
+        }
+    }
 }
 
 impl Component for EditorView {
@@ -1474,6 +1740,27 @@ impl Component for EditorView {
 
                 // clear status
                 cx.editor.status_msg = None;
+
+                // Intercept keys when file tree is focused
+                if cx.editor.file_tree_focused {
+                    let result = self.handle_file_tree_key(key, &mut cx);
+                    if let EventResult::Consumed(_) = &result {
+                        // Collect any callbacks pushed by file tree handlers
+                        let callbacks = take(&mut cx.callback);
+                        let callback = if callbacks.is_empty() {
+                            None
+                        } else {
+                            let callback: crate::compositor::Callback =
+                                Box::new(move |compositor, cx| {
+                                    for callback in callbacks {
+                                        callback(compositor, cx)
+                                    }
+                                });
+                            Some(callback)
+                        };
+                        return EventResult::Consumed(callback);
+                    }
+                }
 
                 let mode = cx.editor.mode();
 
@@ -1615,6 +1902,53 @@ impl Component for EditorView {
             editor_area = editor_area.clip_top(1);
         }
 
+        // File tree sidebar — carve out space before resize
+        let sidebar_width = if cx.editor.file_tree_visible {
+            config
+                .file_tree
+                .width
+                .min(editor_area.width.saturating_sub(10) / 3)
+        } else {
+            0
+        };
+        let sidebar_area = if sidebar_width > 0 {
+            let sa = Rect::new(
+                editor_area.x,
+                editor_area.y,
+                sidebar_width,
+                editor_area.height,
+            );
+            // +1 for separator column (drawn inside sidebar_area)
+            editor_area = editor_area.clip_left(sidebar_width);
+            sa
+        } else {
+            Rect::default()
+        };
+
+        // Process pending file tree updates before rendering
+        let diff_providers = cx.editor.diff_providers.clone();
+
+        // Follow current file: queue a debounced reveal (only when tree
+        // is not focused, so user navigation isn't interrupted)
+        if config.file_tree.follow_current_file
+            && cx.editor.file_tree_visible
+            && !cx.editor.file_tree_focused
+        {
+            let current_path = {
+                let (_view, doc) = current!(cx.editor);
+                doc.path().cloned()
+            };
+            if let Some(path) = current_path {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.request_follow(path);
+                }
+            }
+        }
+
+        if let Some(ref mut tree) = cx.editor.file_tree {
+            tree.process_updates(&config.file_tree, Some(&diff_providers));
+        }
+
         // if the terminal size suddenly changed, we need to trigger a resize
         cx.editor.resize(editor_area);
 
@@ -1625,6 +1959,24 @@ impl Component for EditorView {
         for (view, is_focused) in cx.editor.tree.views() {
             let doc = cx.editor.document(view.doc).unwrap();
             self.render_view(cx.editor, doc, view, area, surface, is_focused);
+        }
+
+        // Render file tree sidebar
+        if sidebar_width > 0 {
+            // Clamp scroll to viewport before rendering
+            if let Some(ref mut tree) = cx.editor.file_tree {
+                tree.clamp_scroll(sidebar_area.height as usize);
+            }
+            if let Some(ref tree) = cx.editor.file_tree {
+                super::file_tree::render_file_tree(
+                    tree,
+                    sidebar_area,
+                    surface,
+                    cx.editor,
+                    cx.editor.file_tree_focused,
+                    &config.file_tree,
+                );
+            }
         }
 
         if config.auto_info {

@@ -670,6 +670,13 @@ impl Application {
         match event {
             EditorEvent::DocumentSaved(event) => {
                 self.handle_document_write(event);
+                // Refresh file tree git status on save
+                let config = self.editor.config();
+                if config.file_tree.git_status {
+                    if let Some(ref mut tree) = self.editor.file_tree {
+                        tree.request_git_refresh();
+                    }
+                }
                 self.render().await;
             }
             EditorEvent::ConfigEvent(event) => {
