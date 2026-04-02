@@ -1,6 +1,9 @@
 use crate::{graphics::Rect, View, ViewId};
 use slotmap::SlotMap;
 
+const MIN_SPLIT_WIDTH: u16 = 10;
+const MIN_SPLIT_HEIGHT: u16 = 3;
+
 // the dimensions are recomputed on window resize/tree change.
 //
 #[derive(Debug)]
@@ -399,57 +402,65 @@ impl Tree {
                     match container.layout {
                         Layout::Horizontal => {
                             let len = container.children.len();
-
-                            let height = area.height / len as u16;
-
+                            let total_weight: f64 = container.weights.iter().sum();
+                            let available_height = area.height as f64;
                             let mut child_y = area.y;
 
-                            for (i, child) in container.children.iter().enumerate() {
-                                let mut area = Rect::new(
+                            for (i, (child, &weight)) in container
+                                .children
+                                .iter()
+                                .zip(container.weights.iter())
+                                .enumerate()
+                            {
+                                let height = if i == len - 1 {
+                                    // last child absorbs rounding remainder; no min clamp here
+                                    (container.area.y + container.area.height)
+                                        .saturating_sub(child_y)
+                                } else {
+                                    let h = ((weight / total_weight) * available_height).round()
+                                        as u16;
+                                    h.max(MIN_SPLIT_HEIGHT)
+                                };
+                                let child_area = Rect::new(
                                     container.area.x,
                                     child_y,
                                     container.area.width,
                                     height,
                                 );
                                 child_y += height;
-
-                                // last child takes the remaining width because we can get uneven
-                                // space from rounding
-                                if i == len - 1 {
-                                    area.height = container.area.y + container.area.height - area.y;
-                                }
-
-                                self.stack.push((*child, area));
+                                self.stack.push((*child, child_area));
                             }
                         }
                         Layout::Vertical => {
                             let len = container.children.len();
-                            let len_u16 = len as u16;
-
+                            let total_weight: f64 = container.weights.iter().sum();
                             let inner_gap = 1u16;
-                            let total_gap = inner_gap * len_u16.saturating_sub(2);
-
-                            let used_area = area.width.saturating_sub(total_gap);
-                            let width = used_area / len_u16;
-
+                            let total_gap = inner_gap * (len as u16).saturating_sub(1);
+                            let used_area = area.width.saturating_sub(total_gap) as f64;
                             let mut child_x = area.x;
 
-                            for (i, child) in container.children.iter().enumerate() {
-                                let mut area = Rect::new(
+                            for (i, (child, &weight)) in container
+                                .children
+                                .iter()
+                                .zip(container.weights.iter())
+                                .enumerate()
+                            {
+                                let width = if i == len - 1 {
+                                    // last child absorbs rounding remainder; no min clamp here
+                                    (container.area.x + container.area.width)
+                                        .saturating_sub(child_x)
+                                } else {
+                                    let w = ((weight / total_weight) * used_area).round() as u16;
+                                    w.max(MIN_SPLIT_WIDTH)
+                                };
+                                let child_area = Rect::new(
                                     child_x,
                                     container.area.y,
                                     width,
                                     container.area.height,
                                 );
                                 child_x += width + inner_gap;
-
-                                // last child takes the remaining width because we can get uneven
-                                // space from rounding
-                                if i == len - 1 {
-                                    area.width = container.area.x + container.area.width - area.x;
-                                }
-
-                                self.stack.push((*child, area));
+                                self.stack.push((*child, child_area));
                             }
                         }
                     }
@@ -972,7 +983,9 @@ mod test {
 
     #[test]
     fn vsplit_gap_rounding() {
-        let (tree_area_width, tree_area_height) = (80, 24);
+        // 200 cols / 10 views: each gets 19px (well above MIN_SPLIT_WIDTH), last absorbs
+        // the 1px rounding remainder and gets 20px.
+        let (tree_area_width, tree_area_height) = (200, 24);
         let mut tree = Tree::new(Rect {
             x: 0,
             y: 0,
@@ -990,8 +1003,8 @@ mod test {
 
         assert_eq!(10, tree.views().count());
         assert_eq!(
-            std::iter::repeat_n(7, 9)
-                .chain(Some(8)) // Rounding in `recalculate`.
+            std::iter::repeat_n(19, 9)
+                .chain(Some(20)) // last child absorbs rounding remainder
                 .collect::<Vec<_>>(),
             tree.views()
                 .map(|(view, _)| view.area.width)
