@@ -112,7 +112,7 @@ macro_rules! keymap {
             )*
             let mut _node = $crate::keymap::KeyTrieNode::new($label, _map);
             $( _node.is_sticky = $sticky; )?
-            $crate::keymap::KeyTrie::Node(_node)
+            $crate::keymap::KeyTrie::Node(::std::sync::Arc::new(_node))
         }
     };
 }

@@ -934,7 +934,7 @@ impl EditorView {
         let mut last_mode = mode;
         self.pseudo_pending.extend(self.keymaps.pending());
         let key_result = self.keymaps.get(mode, event);
-        cxt.editor.autoinfo = self.keymaps.sticky().map(|node| node.infobox());
+        cxt.editor.autoinfo = self.keymaps.sticky_infobox().cloned();
 
         let mut execute_command = |command: &commands::MappableCommand| {
             command.execute(cxt);

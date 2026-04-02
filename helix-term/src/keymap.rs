@@ -46,7 +46,7 @@ impl KeyTrieNode {
         for (key, trie) in std::mem::take(&mut other.map) {
             if let Some(KeyTrie::Node(node)) = self.map.get_mut(&key) {
                 if let KeyTrie::Node(other_node) = trie {
-                    node.merge(other_node);
+                    Arc::make_mut(node).merge(Arc::unwrap_or_clone(other_node));
                     continue;
                 }
             }
@@ -110,7 +110,7 @@ impl DerefMut for KeyTrieNode {
 pub enum KeyTrie {
     MappableCommand(MappableCommand),
     Sequence(Vec<MappableCommand>),
-    Node(KeyTrieNode),
+    Node(Arc<KeyTrieNode>),
 }
 
 impl<'de> Deserialize<'de> for KeyTrie {
@@ -177,7 +177,7 @@ impl<'de> serde::de::Visitor<'de> for KeyTrieVisitor {
         while let Some((key, value)) = map.next_entry::<KeyEvent, KeyTrie>()? {
             mapping.insert(key, value);
         }
-        Ok(KeyTrie::Node(KeyTrieNode::new("", mapping)))
+        Ok(KeyTrie::Node(Arc::new(KeyTrieNode::new("", mapping))))
     }
 }
 
@@ -218,16 +218,20 @@ impl KeyTrie {
 
     pub fn node_mut(&mut self) -> Option<&mut KeyTrieNode> {
         match *self {
-            KeyTrie::Node(ref mut node) => Some(node),
+            KeyTrie::Node(ref mut node) => Some(Arc::make_mut(node)),
             KeyTrie::MappableCommand(_) | KeyTrie::Sequence(_) => None,
         }
     }
 
     /// Merge another KeyTrie in, assuming that this KeyTrie and the other
     /// are both Nodes. Panics otherwise.
-    pub fn merge_nodes(&mut self, mut other: Self) {
-        let node = std::mem::take(other.node_mut().unwrap());
-        self.node_mut().unwrap().merge(node);
+    pub fn merge_nodes(&mut self, other: Self) {
+        let KeyTrie::Node(other_arc) = other else {
+            panic!("merge_nodes called with non-Node KeyTrie");
+        };
+        self.node_mut()
+            .unwrap()
+            .merge(Arc::unwrap_or_clone(other_arc));
     }
 
     /// Descend a trie following the given path of keys
@@ -247,7 +251,7 @@ impl KeyTrie {
 #[derive(Debug, Clone, PartialEq)]
 pub enum KeymapResult {
     /// Needs more keys to execute a command. Contains valid keys for next keystroke.
-    Pending(KeyTrieNode),
+    Pending(Arc<KeyTrieNode>),
     Matched(MappableCommand),
     /// Matched a sequence of commands to execute.
     MatchedSequence(Vec<MappableCommand>),
@@ -267,7 +271,9 @@ pub struct Keymaps {
     /// sticky node if one is in use.
     state: Vec<KeyEvent>,
     /// Stores the sticky node if one is activated.
-    pub sticky: Option<KeyTrieNode>,
+    pub sticky: Option<Arc<KeyTrieNode>>,
+    /// Cached infobox for the active sticky node. Rebuilt only when sticky changes.
+    sticky_infobox: Option<Info>,
 }
 
 impl Keymaps {
@@ -276,6 +282,7 @@ impl Keymaps {
             map,
             state: Vec::new(),
             sticky: None,
+            sticky_infobox: None,
         }
     }
 
@@ -289,7 +296,11 @@ impl Keymaps {
     }
 
     pub fn sticky(&self) -> Option<&KeyTrieNode> {
-        self.sticky.as_ref()
+        self.sticky.as_deref()
+    }
+
+    pub fn sticky_infobox(&self) -> Option<&Info> {
+        self.sticky_infobox.as_ref()
     }
 
     pub fn contains_key(&self, mode: Mode, key: KeyEvent) -> bool {
@@ -315,11 +326,12 @@ impl Keymaps {
                 return KeymapResult::Cancelled(self.state.drain(..).collect());
             }
             self.sticky = None;
+            self.sticky_infobox = None;
         }
 
         let first = self.state.first().unwrap_or(&key);
         let trie_node = match self.sticky {
-            Some(ref trie) => Cow::Owned(KeyTrie::Node(trie.clone())),
+            Some(ref trie) => Cow::Owned(KeyTrie::Node(Arc::clone(trie))),
             None => Cow::Borrowed(keymap),
         };
 
@@ -339,9 +351,10 @@ impl Keymaps {
             Some(KeyTrie::Node(map)) => {
                 if map.is_sticky {
                     self.state.clear();
-                    self.sticky = Some(map.clone());
+                    self.sticky_infobox = Some(map.infobox());
+                    self.sticky = Some(Arc::clone(map));
                 }
-                KeymapResult::Pending(map.clone())
+                KeymapResult::Pending(Arc::clone(map))
             }
             Some(KeyTrie::MappableCommand(cmd)) => {
                 self.state.clear();
@@ -368,7 +381,7 @@ pub fn merge_keys(dst: &mut HashMap<Mode, KeyTrie>, mut delta: HashMap<Mode, Key
         keys.merge_nodes(
             delta
                 .remove(mode)
-                .unwrap_or_else(|| KeyTrie::Node(KeyTrieNode::default())),
+                .unwrap_or_else(|| KeyTrie::Node(Arc::new(KeyTrieNode::default()))),
         )
     }
 }
@@ -562,7 +575,7 @@ mod tests {
 "+" = "select_all"
 a = "append_mode"
         "#;
-        let expectation = KeyTrie::Node(KeyTrieNode::new(
+        let expectation = KeyTrie::Node(Arc::new(KeyTrieNode::new(
             "",
             indexmap! {
                 key!('+') => KeyTrie::MappableCommand(
@@ -572,7 +585,7 @@ a = "append_mode"
                     MappableCommand::append_mode
                 ),
             },
-        ));
+        )));
 
         assert_eq!(toml::from_str(keys), Ok(expectation));
 
@@ -599,7 +612,7 @@ is_sticky = false
             modifiers: KeyModifiers::NONE,
         };
 
-        let expectation = KeyTrie::Node(KeyTrieNode::new(
+        let expectation = KeyTrie::Node(Arc::new(KeyTrieNode::new(
             "",
             indexmap! {
                 key => KeyTrie::Sequence(vec!{
@@ -611,7 +624,7 @@ is_sticky = false
                     },
                 })
             },
-        ));
+        )));
 
         assert_eq!(toml::from_str(keys), Ok(expectation));
     }

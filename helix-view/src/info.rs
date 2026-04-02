@@ -2,7 +2,7 @@ use crate::register::Registers;
 use helix_core::unicode::width::UnicodeWidthStr;
 use std::{borrow::Cow, fmt::Write};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 /// Info box used in editor. Rendering logic will be in other crate.
 pub struct Info {
     /// Title shown at top.
