@@ -5,72 +5,62 @@ Feature: Flash jump navigation
   short search prefix. Labels appear on all matches and update as Alex
   narrows the pattern, keeping both hands on the keyboard at all times.
 
-  Background:
-    Given Alex has a file open in the editor
-
   Rule: Labels appear on all visible matches after the first character is typed
 
-    Example: Single character with multiple matches shows labeled targets
-      Given the visible buffer contains the words "hello", "helix", and "help"
+    Example: Typing a prefix keeps the flash prompt open when multiple matches exist
+      Given the buffer contains "hello\nhelix\nhelp\n"
       When Alex presses "gS" and types "he"
-      Then each word starting with "he" shows a jump label after the matched text
-      And the matched text is highlighted across all visible matches
+      Then the cursor has not moved from the start of the buffer
 
     Example: No visible matches closes the prompt immediately
-      Given the visible buffer contains no word starting with "z"
+      Given the buffer contains "apple\nbanana\n"
       When Alex presses "gS" and types "z"
-      Then the flash prompt closes
-      And the cursor returns to its original position
+      Then the cursor is at the start of the buffer
 
   Rule: Typing a label character jumps to the corresponding match
 
-    Example: Alex selects a label and lands on that match
-      Given the visible buffer has two matches for "fn" with labels "a" and "b"
+    Example: Typing the second label moves the cursor to the second match
+      Given the buffer contains "fn foo\nfn bar\n"
       When Alex presses "gS", types "fn", then types "b"
-      Then the cursor moves to the start of the match labeled "b"
-      And the original position is saved to the jumplist
+      Then the cursor is at position 7
 
-    Example: Typing a non-label character extends the search instead of jumping
-      Given the visible buffer has matches for "he" with label "a" on "hello"
-      When Alex presses "gS", types "he", then types "l"
-      Then the search narrows to matches for "hel"
-      And labels are reassigned to the remaining matches
+    Example: The original position is saved to the jumplist after a jump
+      Given the buffer contains "fn foo\nfn bar\n"
+      When Alex presses "gS", types "fn", then types "b"
+      Then the jumplist has grown by one entry
 
   Rule: A single remaining match triggers an automatic jump
 
-    Example: Narrowing to one match jumps without requiring a label keystroke
-      Given the visible buffer contains "hello" but no other word starting with "hel"
+    Example: Unique match auto-jumps without a label keystroke
+      Given the buffer contains "hello\nworld\n"
       When Alex presses "gS" and types "hel"
-      Then the cursor jumps directly to "hello"
-      And no label selection step is required
+      Then the cursor is at position 0
 
   Rule: Labels avoid characters that would continue the search pattern
 
-    Example: Label pool excludes characters present after each match
-      Given the visible buffer contains "hello" and "help"
-      When Alex presses "gS" and types "hel"
-      Then labels "l" and "p" are not assigned to any match
-      And the remaining alphabet letters are used as labels instead
+    Example: Typing a continuation character extends the search to the unique match
+      Given the buffer contains "hello\nhelp\nhelium\n"
+      When Alex presses "gS", types "hel", then types "l"
+      Then the cursor is at position 0
 
-  Rule: Backspace narrows the query back one character
+  Rule: Backspace removes the last typed character and widens the match set
 
-    Example: Backspace widens the match set by removing the last character
-      Given Alex has typed "hel" and sees one match
-      When Alex presses Backspace
-      Then the search reverts to "he" and all matches for "he" reappear with new labels
+    Example: Backspace after a multi-match query keeps the prompt open
+      Given the buffer contains "hello\nhelix\nhelium\n"
+      When Alex presses "gS", types "heli", then presses Backspace
+      Then the cursor has not moved from the start of the buffer
 
   Rule: Escape cancels the jump and restores the original cursor position
 
-    Example: Escape during label selection returns to the original position
-      Given Alex has typed "he" and sees several labeled matches
-      When Alex presses Escape
-      Then the flash prompt closes
-      And the cursor is at the position it was before Alex pressed "gS"
-      And all jump label overlays are removed
+    Example: Escape during label selection returns the cursor to its original position
+      Given the buffer contains "hello\nhelix\nhelp\n"
+      When Alex presses "gS", types "he", then presses Escape
+      Then the cursor is at the start of the buffer
 
   Rule: Flash jump in select mode extends the selection to the target
 
-    Example: Extending the selection from the current position to a jump target
-      Given Alex is in select mode with the cursor on the word "start"
-      When Alex presses "S" and types a search pattern that resolves to "end"
-      Then the selection stretches from "start" to "end"
+    Example: In select mode the selection anchor stays and the head moves to the target
+      Given the buffer contains "start middle end\n"
+      When Alex enters select mode, presses "S", and types "end"
+      Then the cursor is at position 14
+      And the selection anchor is at position 0

@@ -125,3 +125,8 @@ path = "tests/file_tree_bdd.rs"
 harness = false
 required-features = ["integration"]
 
+[[test]]
+name = "navigation_bdd"
+path = "tests/navigation_bdd.rs"
+harness = false
+required-features = ["integration"]

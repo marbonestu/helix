@@ -1110,7 +1110,7 @@ mod tests {
     #[test]
     fn test_toggle_expand_unloaded_dir_stays_expanded() {
         let (mut tree, _, src_id, _, _) = build_test_tree();
-        let config = FileTreeConfig::default();
+        let _config = FileTreeConfig::default();
 
         // Mark as unloaded and collapsed
         tree.nodes[src_id].loaded = false;
@@ -1294,7 +1294,7 @@ mod tests {
 
     #[test]
     fn test_process_updates_replaces_old_children() {
-        let (mut tree, root_id, src_id, main_id, cargo_id) = build_test_tree();
+        let (mut tree, root_id, src_id, _main_id, cargo_id) = build_test_tree();
         let config = FileTreeConfig::default();
 
         // Replace root's children
@@ -1360,7 +1360,7 @@ mod tests {
 
     #[test]
     fn test_git_status_untracked_inherits_to_children() {
-        let (mut tree, _, src_id, main_id, _) = build_test_tree();
+        let (mut tree, _, _src_id, main_id, _) = build_test_tree();
 
         // Mark the src directory itself as untracked
         tree.git_status_map
@@ -1372,7 +1372,7 @@ mod tests {
 
     #[test]
     fn test_process_updates_git_status() {
-        let (mut tree, root_id, _, _, _) = build_test_tree();
+        let (mut tree, _root_id, _, _, _) = build_test_tree();
         let config = FileTreeConfig::default();
 
         let tx = tree.update_tx();

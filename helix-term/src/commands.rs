@@ -2277,6 +2277,7 @@ fn search(cx: &mut Context) {
 
     let flash = crate::ui::flash::FlashPrompt::new(movement, view_id, doc_id, snapshot)
         .with_search_register(reg);
+    cx.editor.set_status("search:");
     cx.push_layer(Box::new(flash));
 }
 
@@ -7104,6 +7105,7 @@ fn flash_jump_impl(cx: &mut Context, behaviour: Movement) {
     let doc_id = doc.id();
 
     let flash = crate::ui::flash::FlashPrompt::new(behaviour, view_id, doc_id, snapshot);
+    cx.editor.set_status("flash:");
     cx.push_layer(Box::new(flash));
 }
 
