@@ -75,6 +75,14 @@ impl Container {
             area: Rect::default(),
         }
     }
+
+    pub fn layout(&self) -> Layout {
+        self.layout
+    }
+
+    pub fn children(&self) -> &[ViewId] {
+        &self.children
+    }
 }
 
 impl Default for Container {
@@ -668,6 +676,15 @@ impl Tree {
 
     pub fn area(&self) -> Rect {
         self.area
+    }
+
+    pub fn root(&self) -> ViewId {
+        self.root
+    }
+
+    /// Access the content of a node by its id.
+    pub fn node_content(&self, id: ViewId) -> &Content {
+        &self.nodes[id].content
     }
 }
 

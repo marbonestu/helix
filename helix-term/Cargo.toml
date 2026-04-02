@@ -107,3 +107,11 @@ smallvec = "1.15"
 indoc = "2.0.6"
 tempfile.workspace = true
 same-file = "1.0.1"
+cucumber.workspace = true
+serde_json = "1.0"
+
+[[test]]
+name = "session_bdd"
+path = "tests/session_bdd.rs"
+harness = false
+required-features = ["integration"]

@@ -231,6 +231,19 @@ impl Application {
             } else {
                 editor.new_file(Action::VerticalSplit);
             }
+        } else if editor.config().session.persist {
+            // Try restoring a saved session when no files are specified
+            match helix_view::session::load_session() {
+                Ok(snapshot) => {
+                    if let Err(e) = restore_session(&mut editor, snapshot) {
+                        log::warn!("Failed to restore session: {e}");
+                        editor.new_file(Action::VerticalSplit);
+                    }
+                }
+                Err(_) => {
+                    editor.new_file(Action::VerticalSplit);
+                }
+            }
         } else if stdin().is_terminal() || cfg!(feature = "integration") {
             editor.new_file(Action::VerticalSplit);
         } else {
@@ -1345,6 +1358,151 @@ impl Application {
         }
 
         errs
+    }
+}
+
+/// Restore an editor session from a saved snapshot.
+///
+/// Walks the layout tree depth-first, opening files and recreating splits to
+/// match the saved structure. Skips files that no longer exist on disk, and
+/// clamps cursor positions to the current document length.
+pub(crate) fn restore_session(
+    editor: &mut Editor,
+    snapshot: helix_view::session::SessionSnapshot,
+) -> anyhow::Result<()> {
+    let mut skipped: Vec<String> = Vec::new();
+    let opened = restore_layout_node(editor, &snapshot.layout, true, &mut skipped)?;
+
+    if !opened {
+        anyhow::bail!("no files could be restored from session");
+    }
+
+    // Restore registers if present (scope = Full)
+    if let Some(saved_registers) = snapshot.registers {
+        helix_view::session::restore_registers(&mut editor.registers, saved_registers);
+    }
+
+    // Restore breakpoints if present
+    if let Some(saved_breakpoints) = snapshot.breakpoints {
+        helix_view::session::restore_breakpoints(&mut editor.breakpoints, saved_breakpoints);
+    }
+
+    if !skipped.is_empty() {
+        editor.set_status(format!(
+            "Session restored (skipped {} missing file{})",
+            skipped.len(),
+            if skipped.len() == 1 { "" } else { "s" }
+        ));
+    } else {
+        editor.set_status("Session restored");
+    }
+
+    Ok(())
+}
+
+/// Recursively restore a layout node, opening files and creating splits.
+/// `is_first` indicates whether this is the first view being opened (uses
+/// VerticalSplit action to initialize the tree).
+/// Returns true if at least one view was opened.
+fn restore_layout_node(
+    editor: &mut Editor,
+    layout: &helix_view::session::SessionLayout,
+    is_first: bool,
+    skipped: &mut Vec<String>,
+) -> anyhow::Result<bool> {
+    use helix_view::session::{SessionLayout, SessionSplitDirection};
+
+    match layout {
+        SessionLayout::View(sv) => open_session_view(editor, sv, is_first, skipped),
+        SessionLayout::Container {
+            layout: direction,
+            children,
+        } => {
+            let mut opened_any = false;
+
+            for child in children {
+                if !opened_any {
+                    // First child in container: open without creating a new split
+                    let child_opened =
+                        restore_layout_node(editor, child, is_first, skipped)?;
+                    if child_opened {
+                        opened_any = true;
+                    }
+                } else {
+                    // Subsequent children: open and the split action creates the split
+                    let child_opened =
+                        restore_layout_node(editor, child, false, skipped)?;
+                    if child_opened {
+                        // Transpose to match saved direction if needed.
+                        // Action::VerticalSplit creates a vertical split by default.
+                        if *direction == SessionSplitDirection::Horizontal {
+                            editor.tree.transpose();
+                        }
+                    }
+                }
+            }
+
+            Ok(opened_any)
+        }
+    }
+}
+
+/// Open a single view from a session, restoring cursor and scroll positions.
+fn open_session_view(
+    editor: &mut Editor,
+    sv: &helix_view::session::SessionView,
+    is_first: bool,
+    skipped: &mut Vec<String>,
+) -> anyhow::Result<bool> {
+    use helix_view::editor::Action;
+
+    let action = if is_first {
+        Action::VerticalSplit
+    } else {
+        Action::VerticalSplit
+    };
+
+    match &sv.document.path {
+        Some(p) if p.exists() => match editor.open(p, action) {
+            Ok(doc_id) => {
+                let view_id = editor.tree.focus;
+
+                if let Some((anchor, head)) = sv.document.selection {
+                    let doc = editor.documents.get_mut(&doc_id).unwrap();
+                    let len = doc.text().len_chars().saturating_sub(1).max(0);
+                    let anchor = anchor.min(len);
+                    let head = head.min(len);
+                    doc.set_selection(view_id, Selection::single(anchor, head));
+                }
+
+                if let Some((vp_anchor, h_offset)) = sv.document.view_position {
+                    let doc = editor.documents.get_mut(&doc_id).unwrap();
+                    let len = doc.text().len_chars().saturating_sub(1).max(0);
+                    let vp = helix_view::view::ViewPosition {
+                        anchor: vp_anchor.min(len),
+                        horizontal_offset: h_offset,
+                        vertical_offset: 0,
+                    };
+                    doc.set_view_offset(view_id, vp);
+                }
+
+                Ok(true)
+            }
+            Err(e) => {
+                log::warn!("Failed to open {}: {e}", p.display());
+                skipped.push(p.display().to_string());
+                Ok(false)
+            }
+        },
+        Some(p) => {
+            skipped.push(p.display().to_string());
+            Ok(false)
+        }
+        None => {
+            // Scratch buffer
+            editor.new_file(action);
+            Ok(true)
+        }
     }
 }
 
