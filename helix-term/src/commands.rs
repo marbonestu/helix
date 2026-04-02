@@ -618,6 +618,7 @@ impl MappableCommand {
         flash_jump, "Flash jump to a search match",
         extend_flash_jump, "Extend selection to a flash jump match",
         flash_search, "Flash jump using last search pattern",
+        search_all, "Flash search across the entire visible viewport (both directions)",
         goto_next_tabstop, "Goto next snippet placeholder",
         goto_prev_tabstop, "Goto next snippet placeholder",
         rotate_selections_first, "Make the first selection your primary one",
@@ -2253,16 +2254,35 @@ fn search_impl(
     };
 }
 
-fn search_completions(cx: &mut Context, reg: Option<char>) -> Vec<String> {
-    let mut items = reg
-        .and_then(|reg| cx.editor.registers.read(reg, cx.editor))
-        .map_or(Vec::new(), |reg| reg.take(200).collect());
-    items.sort_unstable();
-    items.dedup();
-    items.into_iter().map(|value| value.to_string()).collect()
+fn search(cx: &mut Context) {
+    flash_search_impl(cx, Direction::Forward);
 }
 
-fn search(cx: &mut Context) {
+fn rsearch(cx: &mut Context) {
+    flash_search_impl(cx, Direction::Backward);
+}
+
+fn search_all(cx: &mut Context) {
+    let reg = cx.register.unwrap_or('/');
+    let movement = if cx.editor.mode() == Mode::Select {
+        Movement::Extend
+    } else {
+        Movement::Move
+    };
+
+    let (view, doc) = current_ref!(cx.editor);
+    let snapshot = doc.selection(view.id).clone();
+    let view_id = view.id;
+    let doc_id = doc.id();
+
+    // No direction set — searches the entire visible viewport.
+    let flash = crate::ui::flash::FlashPrompt::new(movement, view_id, doc_id, snapshot)
+        .with_search_register(reg);
+    cx.editor.set_status("%");
+    cx.push_layer(Box::new(flash));
+}
+
+fn flash_search_impl(cx: &mut Context, direction: Direction) {
     let reg = cx.register.unwrap_or('/');
     let movement = if cx.editor.mode() == Mode::Select {
         Movement::Extend
@@ -2276,58 +2296,14 @@ fn search(cx: &mut Context) {
     let doc_id = doc.id();
 
     let flash = crate::ui::flash::FlashPrompt::new(movement, view_id, doc_id, snapshot)
-        .with_search_register(reg);
-    cx.editor.set_status("search:");
-    cx.push_layer(Box::new(flash));
-}
-
-fn rsearch(cx: &mut Context) {
-    // Reverse search still uses the traditional regex prompt
-    searcher(cx, Direction::Backward)
-}
-
-fn searcher(cx: &mut Context, direction: Direction) {
-    let reg = cx.register.unwrap_or('/');
-    let config = cx.editor.config();
-    let scrolloff = config.scrolloff;
-    let wrap_around = config.search.wrap_around;
-    let movement = if cx.editor.mode() == Mode::Select {
-        Movement::Extend
-    } else {
-        Movement::Move
+        .with_search_register(reg)
+        .with_direction(direction);
+    let initial_status = match direction {
+        Direction::Forward => "/",
+        Direction::Backward => "?",
     };
-
-    // TODO: could probably share with select_on_matches?
-    let completions = search_completions(cx, Some(reg));
-
-    ui::regex_prompt(
-        cx,
-        "search:".into(),
-        Some(reg),
-        move |_editor: &Editor, input: &str| {
-            completions
-                .iter()
-                .filter(|comp| comp.starts_with(input))
-                .map(|comp| (0.., comp.clone().into()))
-                .collect()
-        },
-        move |cx, regex, event| {
-            if event == PromptEvent::Validate {
-                cx.editor.registers.last_search_register = reg;
-            } else if event != PromptEvent::Update {
-                return;
-            }
-            search_impl(
-                cx.editor,
-                &regex,
-                movement,
-                direction,
-                scrolloff,
-                wrap_around,
-                false,
-            );
-        },
-    );
+    cx.editor.set_status(initial_status);
+    cx.push_layer(Box::new(flash));
 }
 
 fn search_next_or_prev_impl(cx: &mut Context, movement: Movement, direction: Direction) {
@@ -7105,7 +7081,7 @@ fn flash_jump_impl(cx: &mut Context, behaviour: Movement) {
     let doc_id = doc.id();
 
     let flash = crate::ui::flash::FlashPrompt::new(behaviour, view_id, doc_id, snapshot);
-    cx.editor.set_status("flash:");
+    cx.editor.set_status("flash");
     cx.push_layer(Box::new(flash));
 }
 

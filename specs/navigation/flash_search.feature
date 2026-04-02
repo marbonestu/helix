@@ -1,19 +1,20 @@
 @navigation:flash-search
 Feature: Flash-powered incremental search
 
-  Pressing "/" opens a flash search prompt rather than a plain regex prompt.
-  All visible matches are highlighted as Alex types, and after jumping to a
-  match the pattern is saved so that "n" and "N" continue navigating through
-  the document without re-entering the search.
+  Pressing "/" opens a forward flash search prompt that only shows matches at or
+  after the cursor. Pressing "?" opens a backward flash search prompt that only
+  shows matches before the cursor, with the closest match labelled first.
+  After jumping, the pattern is saved so that "n" and "N" continue navigating
+  through the document.
 
-  Rule: "/" opens the flash search prompt
+  Rule: "/" opens the forward flash search prompt
 
-    Example: Flash prompt appears and shows a "search:" prefix in the status line
+    Example: Flash prompt appears and shows "/" in the status line
       Given the buffer contains "fn foo\nfn bar\n"
       When Alex presses "/"
-      Then the status line shows "search:"
+      Then the status line shows "/"
 
-  Rule: All visible matches are highlighted as Alex types
+  Rule: All visible matches at or after the cursor are highlighted as Alex types
 
     Example: Typing a label after a multi-match prefix jumps to the labeled target
       Given the buffer contains "fn foo\nfn bar\n"
@@ -52,3 +53,30 @@ Feature: Flash-powered incremental search
       When Alex presses "/" and types "hel"
       Then the cursor is at position 0
       And the search register contains "hel"
+
+  Rule: "?" opens the backward flash search prompt
+
+    Example: "?" prompt appears and shows "?" in the status line
+      Given the buffer contains "fn foo\nfn bar\n"
+      When Alex presses "?"
+      Then the status line shows "?"
+
+  Rule: "?" only shows matches before the cursor position
+
+    Example: "?" from the start of the buffer finds no matches
+      Given the buffer contains "fn foo\nfn bar\n"
+      When Alex presses "?" and types "fn"
+      Then the status line shows "No matches"
+
+    Example: "?" after moving the cursor forward finds matches above it
+      Given the buffer contains "fn foo\nfn bar\n"
+      When Alex presses "w"
+      And Alex presses "?" and types "fn"
+      Then the cursor is at position 0
+      And the search register contains "fn"
+
+    Example: Escape from "?" restores the cursor to where it was before pressing "?"
+      Given the buffer contains "fn foo\nfn bar\n"
+      When Alex presses "w"
+      And Alex presses "?", types "fn", then presses Escape
+      Then the cursor is at position 3

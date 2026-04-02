@@ -41,10 +41,18 @@ struct LabeledMatch {
 /// Labels that would conflict with the "continuation character" (the char
 /// right after each match) are removed from the pool so that extending the
 /// search is never ambiguous with selecting a label.
+///
+/// When `direction` is `Some(Forward)` (the `/` key), only matches at or after
+/// the cursor are labelled; `Some(Backward)` (the `?` key) restricts to matches
+/// before the cursor with labels ordered closest-first. `None` searches the
+/// entire visible viewport in both directions.
 pub struct FlashPrompt {
     query: String,
     labeled: Vec<LabeledMatch>,
     behaviour: Movement,
+    /// Restricts visible matches to one side of the cursor, or `None` for the
+    /// full viewport.
+    direction: Option<Direction>,
     snapshot: Selection,
     view_id: ViewId,
     doc_id: DocumentId,
@@ -63,6 +71,7 @@ impl FlashPrompt {
             query: String::new(),
             labeled: Vec::new(),
             behaviour,
+            direction: None,
             snapshot,
             view_id,
             doc_id,
@@ -70,9 +79,15 @@ impl FlashPrompt {
         }
     }
 
-    /// Set a register to save the query to on successful jump.
+    /// Set a register to save the query to on successful jump (for n/N).
     pub fn with_search_register(mut self, reg: char) -> Self {
         self.search_register = Some(reg);
+        self
+    }
+
+    /// Restrict match candidates to one side of the cursor.
+    pub fn with_direction(mut self, direction: Direction) -> Self {
+        self.direction = Some(direction);
         self
     }
 
@@ -100,6 +115,12 @@ impl FlashPrompt {
 
     /// Find all char-index positions in the viewport where the full query
     /// matches (multi-char sequential match starting from first char).
+    ///
+    /// Results are filtered by [`Self::direction`] relative to the cursor
+    /// position captured in [`Self::snapshot`]:
+    /// - `Forward`: positions at or after the cursor (used for `/`)
+    /// - `Backward`: positions strictly before the cursor, reversed so that
+    ///   the closest match gets the first label (used for `?`)
     fn find_match_positions(&self, editor: &Editor) -> Vec<usize> {
         let ci = self.case_insensitive(editor);
         let doc = &editor.documents[&self.doc_id];
@@ -111,20 +132,32 @@ impl FlashPrompt {
             return Vec::new();
         }
 
-        let first_positions = find_all_char_matches(text, chars[0], start..end, ci);
+        // Use the snapshot cursor so the range boundary is stable while
+        // matches are highlighted (the live selection changes during search).
+        let cursor = self.snapshot.primary().cursor(text);
+        let search_range = match self.direction {
+            Some(Direction::Forward) => cursor..end,
+            Some(Direction::Backward) => start..cursor,
+            None => start..end,
+        };
 
-        first_positions
+        let first_positions = find_all_char_matches(text, chars[0], search_range, ci);
+
+        let mut positions: Vec<usize> = first_positions
             .into_iter()
             .filter(|&pos| {
-                for (offset, &qch) in chars[1..].iter().enumerate() {
-                    match text.get_char(pos + 1 + offset) {
-                        Some(c) if char_eq(c, qch, ci) => {}
-                        _ => return false,
-                    }
-                }
-                true
+                chars[1..].iter().enumerate().all(|(offset, &qch)| {
+                    matches!(text.get_char(pos + 1 + offset), Some(c) if char_eq(c, qch, ci))
+                })
             })
-            .collect()
+            .collect();
+
+        // Reverse backward results so labels are assigned closest-first.
+        if self.direction == Some(Direction::Backward) {
+            positions.reverse();
+        }
+
+        positions
     }
 
     /// Set multi-selection on the document to highlight all match ranges.
@@ -293,11 +326,27 @@ impl FlashPrompt {
         }
     }
 
+    /// Returns the status-line prefix for the current mode:
+    /// `"/"` (forward search), `"?"` (backward search), `"%"` (whole-doc
+    /// search), or `"flash"` (pure flash jump without register).
     fn status_prefix(&self) -> &'static str {
-        if self.search_register.is_some() {
-            "search"
+        match self.search_register {
+            Some(_) => match self.direction {
+                Some(Direction::Forward) => "/",
+                Some(Direction::Backward) => "?",
+                None => "%",
+            },
+            None => "flash",
+        }
+    }
+
+    /// Formats the full status line string for the given query text.
+    fn format_status(&self, query: &str) -> String {
+        let prefix = self.status_prefix();
+        if query.is_empty() {
+            prefix.to_string()
         } else {
-            "flash"
+            format!("{prefix} {query}")
         }
     }
 
@@ -357,12 +406,7 @@ impl Component for FlashPrompt {
             } => {
                 self.query.pop();
                 self.update(cx.editor);
-                let prefix = self.status_prefix();
-                if self.query.is_empty() {
-                    cx.editor.set_status(format!("{}:", prefix));
-                } else {
-                    cx.editor.set_status(format!("{}: {}", prefix, self.query));
-                }
+                cx.editor.set_status(self.format_status(&self.query));
                 EventResult::Consumed(None)
             }
             KeyEvent {
@@ -382,8 +426,7 @@ impl Component for FlashPrompt {
                 // Not a label — extend the search pattern and recompute.
                 self.query.push(ch);
                 self.update(cx.editor);
-                cx.editor
-                    .set_status(format!("{}: {}", self.status_prefix(), self.query));
+                cx.editor.set_status(self.format_status(&self.query));
 
                 // Auto-jump when exactly one match remains.
                 if self.labeled.len() == 1 {
