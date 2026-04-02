@@ -860,6 +860,13 @@ impl FileTree {
                     self.prompt_input.clear();
                     return None;
                 }
+                // No-op: name unchanged.
+                let current_name = self.nodes.get(*id).map(|n| n.name.as_str()).unwrap_or("");
+                if new_name == current_name {
+                    self.prompt_mode = PromptMode::None;
+                    self.prompt_input.clear();
+                    return None;
+                }
                 let old_path = self.node_path(*id);
                 let commit = PromptCommit::Rename { old_path, new_name };
                 self.prompt_mode = PromptMode::None;

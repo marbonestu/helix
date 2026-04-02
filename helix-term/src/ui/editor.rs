@@ -1858,24 +1858,21 @@ impl EditorView {
                     .parent()
                     .map(|p| p.join(&new_name))
                     .unwrap_or_else(|| PathBuf::from(&new_name));
-                let tx = cx.editor.file_tree.as_ref().map(|t| t.update_tx());
-                match cx.editor.move_path(&old_path, &new_path) {
-                    Ok(()) => {
-                        if let (Some(tx), Some(parent)) =
-                            (tx, new_path.parent().map(|p| p.to_path_buf()))
-                        {
-                            let _ = tx.try_send(
-                                helix_view::file_tree::FileTreeUpdate::FsOpComplete {
-                                    refresh_parent: parent,
-                                    select_path: Some(new_path),
-                                },
-                            );
+                let config = cx.editor.config().file_tree.clone();
+                cx.callback.push(Box::new(move |_compositor, cx| {
+                    match cx.editor.move_path(&old_path, &new_path) {
+                        Ok(()) => {
+                            // Refresh the tree so the renamed node appears and reveal it.
+                            if let Some(ref mut tree) = cx.editor.file_tree {
+                                tree.refresh(&config);
+                                tree.reveal_path(&new_path, &config);
+                            }
+                        }
+                        Err(e) => {
+                            cx.editor.set_error(format!("Rename failed: {e}"));
                         }
                     }
-                    Err(e) => {
-                        cx.editor.set_error(format!("Rename failed: {}", e));
-                    }
-                }
+                }));
             }
             PromptCommit::Duplicate { src_path, new_name } => {
                 if let Some(ref tree) = cx.editor.file_tree {
