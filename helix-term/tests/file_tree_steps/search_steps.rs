@@ -11,12 +11,6 @@ use super::FileTreeWorld;
 // Given — Background / setup
 // ---------------------------------------------------------------------------
 
-#[given("the file tree sidebar is visible and focused")]
-fn tree_visible_and_focused_search(world: &mut FileTreeWorld) {
-    world.create_project_structure();
-    world.init_tree();
-}
-
 /// Background step: seed the tree with the named nodes listed in the DataTable.
 /// The standard project structure already contains all listed nodes, so we
 /// simply ensure the tree is initialised.

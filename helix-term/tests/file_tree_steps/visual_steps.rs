@@ -13,12 +13,6 @@ use super::FileTreeWorld;
 // Given — Background
 // ---------------------------------------------------------------------------
 
-#[given("the file tree sidebar is visible")]
-fn tree_sidebar_visible_visual(world: &mut FileTreeWorld) {
-    world.create_project_structure();
-    world.init_tree();
-}
-
 #[given("the project is a git repository")]
 fn project_is_git_repo(_world: &mut FileTreeWorld) {
     // No-op: the git status is injected via the update channel in individual

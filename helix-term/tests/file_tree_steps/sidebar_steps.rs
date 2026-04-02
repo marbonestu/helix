@@ -26,45 +26,6 @@ fn sidebar_hidden(world: &mut FileTreeWorld) {
     app.editor.file_tree_focused = false;
 }
 
-#[given("the file tree sidebar is visible")]
-async fn sidebar_visible(world: &mut FileTreeWorld) {
-    if world.app.is_none() {
-        world.build_app().expect("failed to build Application");
-    }
-    let is_visible = world
-        .app
-        .as_ref()
-        .map(|a| a.editor.file_tree_visible)
-        .unwrap_or(false);
-    if !is_visible {
-        let app = world.app.as_mut().unwrap();
-        crate::helpers::test_key_sequence(app, Some("<space>e"), None, false)
-            .await
-            .unwrap();
-    }
-}
-
-#[given("the file tree sidebar is visible and focused")]
-async fn sidebar_visible_and_focused(world: &mut FileTreeWorld) {
-    if world.app.is_none() {
-        world.build_app().expect("failed to build Application");
-    }
-    let is_visible = world
-        .app
-        .as_ref()
-        .map(|a| a.editor.file_tree_visible)
-        .unwrap_or(false);
-    if !is_visible {
-        let app = world.app.as_mut().unwrap();
-        crate::helpers::test_key_sequence(app, Some("<space>e"), None, false)
-            .await
-            .unwrap();
-    }
-    if let Some(app) = world.app.as_mut() {
-        app.editor.file_tree_focused = true;
-    }
-}
-
 #[given("the file tree sidebar has never been opened in this session")]
 fn sidebar_never_opened(world: &mut FileTreeWorld) {
     if world.app.is_none() {

@@ -5,7 +5,7 @@ mod visual_steps;
 
 use std::path::PathBuf;
 
-use cucumber::World;
+use cucumber::{given, World};
 use helix_term::{application::Application, config::Config};
 use helix_view::{
     editor::LspConfig,
@@ -107,6 +107,57 @@ impl FileTreeWorld {
 
         self.app = Some(builder.build()?);
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared Given steps used by multiple feature clusters
+// ---------------------------------------------------------------------------
+
+/// Library-level: creates the project structure and inits the `FileTree`.
+/// Live-app level: ensures the sidebar is visible via `<space>e`.
+#[given("the file tree sidebar is visible")]
+async fn given_sidebar_visible(world: &mut FileTreeWorld) {
+    if world.app.is_some() {
+        let is_visible = world
+            .app
+            .as_ref()
+            .map(|a| a.editor.file_tree_visible)
+            .unwrap_or(false);
+        if !is_visible {
+            let app = world.app.as_mut().unwrap();
+            crate::helpers::test_key_sequence(app, Some("<space>e"), None, false)
+                .await
+                .unwrap();
+        }
+    } else {
+        world.create_project_structure();
+        world.init_tree();
+    }
+}
+
+/// Library-level: creates project structure and inits the `FileTree`.
+/// Live-app level: ensures sidebar is visible and sets `file_tree_focused`.
+#[given("the file tree sidebar is visible and focused")]
+async fn given_sidebar_visible_and_focused(world: &mut FileTreeWorld) {
+    if world.app.is_some() {
+        let is_visible = world
+            .app
+            .as_ref()
+            .map(|a| a.editor.file_tree_visible)
+            .unwrap_or(false);
+        if !is_visible {
+            let app = world.app.as_mut().unwrap();
+            crate::helpers::test_key_sequence(app, Some("<space>e"), None, false)
+                .await
+                .unwrap();
+        }
+        if let Some(app) = world.app.as_mut() {
+            app.editor.file_tree_focused = true;
+        }
+    } else {
+        world.create_project_structure();
+        world.init_tree();
     }
 }
 

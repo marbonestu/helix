@@ -12,12 +12,6 @@ use super::FileTreeWorld;
 // Given — project structure / Background
 // ---------------------------------------------------------------------------
 
-#[given("the file tree sidebar is visible and focused")]
-fn tree_visible_and_focused(world: &mut FileTreeWorld) {
-    world.create_project_structure();
-    world.init_tree();
-}
-
 #[given(expr = "the project contains the structure:")]
 fn project_contains_structure(world: &mut FileTreeWorld) {
     // The standard project structure is already created by the Background step
