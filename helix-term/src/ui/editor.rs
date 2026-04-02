@@ -1835,6 +1835,30 @@ impl EditorView {
                 }
                 EventResult::Consumed(None)
             }
+            KeyCode::Char('t') => {
+                let dir = cx.editor.file_tree.as_ref()
+                    .and_then(|t| t.selected_dir_path());
+                if let Some(dir) = dir {
+                    let cmd = resolve_terminal_open_cmd(&cx.editor.config());
+                    match cmd {
+                        Some((prog, args)) => {
+                            let result = std::process::Command::new(&prog)
+                                .args(&args)
+                                .arg(&dir)
+                                .spawn();
+                            if let Err(e) = result {
+                                cx.editor.set_error(format!("terminal: {e}"));
+                            }
+                        }
+                        None => {
+                            cx.editor.set_error(
+                                "No terminal configured. Set [editor.file-tree] open-terminal or [editor.terminal].".to_string()
+                            );
+                        }
+                    }
+                }
+                EventResult::Consumed(None)
+            }
             // --- Scroll bindings ---
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(ref mut tree) = cx.editor.file_tree {
@@ -1977,6 +2001,34 @@ impl EditorView {
             let _ = editor.close_document(id, true);
         }
     }
+}
+
+/// Resolve the command + leading args used to open a terminal at a directory.
+/// The caller appends the directory path as the final argument.
+///
+/// Resolution order:
+/// 1. `[editor.file-tree] open-terminal` — explicit list, e.g. `["tmux", "split-window", "-c"]`
+/// 2. `[editor.terminal]` auto-detect — appends the appropriate CWD flag for
+///    known terminals (tmux → `-c`, wezterm → `--cwd`).
+fn resolve_terminal_open_cmd(
+    config: &helix_view::editor::Config,
+) -> Option<(String, Vec<String>)> {
+    // Explicit override in file-tree config wins.
+    if let Some(ref cmd) = config.file_tree.open_terminal {
+        if let Some((prog, rest)) = cmd.split_first() {
+            return Some((prog.clone(), rest.to_vec()));
+        }
+    }
+
+    // Fall back to editor.terminal with a CWD flag appended.
+    let terminal = config.terminal.as_ref()?;
+    let mut args = terminal.args.clone();
+    match terminal.command.as_str() {
+        "tmux" => args.push("-c".to_string()),
+        "wezterm" => args.push("--cwd".to_string()),
+        _ => {} // unknown terminal — just append the path directly after args
+    }
+    Some((terminal.command.clone(), args))
 }
 
 impl Component for EditorView {

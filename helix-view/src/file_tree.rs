@@ -31,6 +31,14 @@ pub struct FileTreeConfig {
     pub git_status_scope_to_path: bool,
     /// Show nerd font file/folder icons.
     pub icons: bool,
+    /// Command used to open a terminal at a directory when pressing `t` in the
+    /// file tree. The selected directory path is appended as the final argument.
+    ///
+    /// Example (tmux):    `open-terminal = ["tmux", "split-window", "-c"]`
+    /// Example (wezterm): `open-terminal = ["wezterm", "cli", "split-pane", "--cwd"]`
+    ///
+    /// When unset, Helix auto-detects based on the `[editor.terminal]` config.
+    pub open_terminal: Option<Vec<String>>,
 }
 
 impl Default for FileTreeConfig {
@@ -46,6 +54,7 @@ impl Default for FileTreeConfig {
             max_depth: Some(10),
             git_status_scope_to_path: false,
             icons: true,
+            open_terminal: None,
         }
     }
 }

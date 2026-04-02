@@ -226,19 +226,44 @@ pub fn render_file_tree(
             .try_get("ui.sidebar.search")
             .unwrap_or_else(|| theme.get("ui.text"));
 
-        let prompt_text = match tree.prompt_mode() {
-            PromptMode::Search => format!("/{}", tree.search_query()),
-            PromptMode::NewFile { .. } => format!("New file: {}", tree.prompt_input()),
-            PromptMode::NewDir { .. } => format!("New dir: {}", tree.prompt_input()),
-            PromptMode::Rename(_) => format!("Rename to: {}", tree.prompt_input()),
-            PromptMode::Duplicate(_) => format!("Duplicate as: {}", tree.prompt_input()),
+        // For text-input modes, split into a label and the editable input so
+        // we can render a block cursor immediately after the input text.
+        enum PromptContent<'a> {
+            /// label + editable input — cursor rendered after input
+            Input { label: &'a str, input: &'a str },
+            /// static confirmation text — no cursor
+            Static(String),
+        }
+
+        let content = match tree.prompt_mode() {
+            PromptMode::Search => PromptContent::Input {
+                label: "/",
+                input: tree.search_query(),
+            },
+            PromptMode::NewFile { .. } => PromptContent::Input {
+                label: "New file: ",
+                input: tree.prompt_input(),
+            },
+            PromptMode::NewDir { .. } => PromptContent::Input {
+                label: "New dir: ",
+                input: tree.prompt_input(),
+            },
+            PromptMode::Rename(_) => PromptContent::Input {
+                label: "Rename to: ",
+                input: tree.prompt_input(),
+            },
+            PromptMode::Duplicate(_) => PromptContent::Input {
+                label: "Duplicate as: ",
+                input: tree.prompt_input(),
+            },
             PromptMode::DeleteConfirm { id, is_dir } => {
                 let name = tree.nodes().get(*id).map(|n| n.name.as_str()).unwrap_or("?");
-                if *is_dir {
+                let text = if *is_dir {
                     format!("Delete '{name}/' and all contents? [y/n]")
                 } else {
                     format!("Delete '{name}'? [y/n]")
-                }
+                };
+                PromptContent::Static(text)
             }
             PromptMode::None => {
                 // Show status message in a dimmed style
@@ -249,13 +274,32 @@ pub fn render_file_tree(
             }
         };
 
-        surface.set_stringn(
-            content_area.x,
-            prompt_y,
-            &prompt_text,
-            content_width,
-            prompt_style,
-        );
+        match content {
+            PromptContent::Input { label, input } => {
+                let mut x = content_area.x;
+                let remaining = |x: u16| (content_area.x + content_area.width).saturating_sub(x) as usize;
+
+                // Render the label in a slightly dimmed style so the input stands out
+                let label_style = prompt_style.add_modifier(Modifier::DIM);
+                let label_width = label.chars().count() as u16;
+                surface.set_stringn(x, prompt_y, label, remaining(x), label_style);
+                x += label_width;
+
+                // Render the typed input
+                let input_width = input.chars().count() as u16;
+                surface.set_stringn(x, prompt_y, input, remaining(x), prompt_style);
+                x += input_width;
+
+                // Render the block cursor
+                if remaining(x) > 0 {
+                    let cursor_style = prompt_style.add_modifier(Modifier::REVERSED);
+                    surface.set_string(x, prompt_y, " ", cursor_style);
+                }
+            }
+            PromptContent::Static(text) => {
+                surface.set_stringn(content_area.x, prompt_y, &text, content_width, prompt_style);
+            }
+        }
     }
 }
 
