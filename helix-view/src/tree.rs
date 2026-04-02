@@ -64,6 +64,8 @@ pub enum Direction {
 pub struct Container {
     layout: Layout,
     children: Vec<ViewId>,
+    /// Proportional weight for each child (same length as `children`). Defaults to 1.0 per child.
+    weights: Vec<f64>,
     area: Rect,
 }
 
@@ -72,6 +74,7 @@ impl Container {
         Self {
             layout,
             children: Vec::new(),
+            weights: Vec::new(),
             area: Rect::default(),
         }
     }
@@ -140,6 +143,7 @@ impl Tree {
         };
 
         container.children.insert(pos, node);
+        container.weights.insert(pos, 1.0);
         // focus the new node
         self.focus = node;
 
@@ -177,6 +181,7 @@ impl Tree {
                 pos + 1
             };
             container.children.insert(pos, node);
+            container.weights.insert(pos, 1.0);
             self.nodes[node].parent = parent;
         } else {
             let mut split = Node::container(layout);
@@ -192,6 +197,8 @@ impl Tree {
             };
             container.children.push(focus);
             container.children.push(node);
+            container.weights.push(1.0);
+            container.weights.push(1.0);
             self.nodes[focus].parent = split;
             self.nodes[node].parent = split;
 
@@ -249,9 +256,11 @@ impl Tree {
 
         if let Some(new) = replacement {
             container.children[pos] = new;
+            // weight is inherited at the same position; no change needed
             self.nodes[new].parent = parent;
         } else {
             container.children.remove(pos);
+            container.weights.remove(pos);
         }
     }
 
@@ -268,9 +277,9 @@ impl Tree {
 
         let parent_container = self.container_mut(parent);
         if parent_container.children.len() == 1 && !parent_is_root {
-            // Lets merge the only child back to its grandparent so that Views
-            // are equally spaced.
+            // Merge the only remaining child back into its grandparent.
             let sibling = parent_container.children.pop().unwrap();
+            parent_container.weights.pop();
             self.remove_or_replace(parent, Some(sibling));
         }
 
@@ -627,6 +636,8 @@ impl Tree {
                     // swap node positions so that traversal order is kept
                     parent.children[focus_pos] = target_view.id;
                     parent.children[target_pos] = focus_view.id;
+                    // weights follow their views
+                    parent.weights.swap(focus_pos, target_pos);
                     // swap area so that views rendered at the correct location
                     std::mem::swap(&mut focus_view.area, &mut target_view.area);
 
@@ -662,6 +673,11 @@ impl Tree {
                     std::mem::swap(
                         &mut focus_parent.children[focus_pos],
                         &mut target_parent.children[target_pos],
+                    );
+                    // weights follow their views across parents
+                    std::mem::swap(
+                        &mut focus_parent.weights[focus_pos],
+                        &mut target_parent.weights[target_pos],
                     );
                     std::mem::swap(&mut focus.parent, &mut target.parent);
                     // swap area so that views rendered at the correct location
