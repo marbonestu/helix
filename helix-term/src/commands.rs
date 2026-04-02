@@ -619,6 +619,8 @@ impl MappableCommand {
         extend_flash_jump, "Extend selection to a flash jump match",
         flash_search, "Flash jump using last search pattern",
         search_all, "Flash search across the entire visible viewport (both directions)",
+        regex_search, "Open a regex search prompt (forward, no flash)",
+        regex_rsearch, "Open a regex search prompt (backward, no flash)",
         goto_next_tabstop, "Goto next snippet placeholder",
         goto_prev_tabstop, "Goto next snippet placeholder",
         rotate_selections_first, "Make the first selection your primary one",
@@ -2260,6 +2262,70 @@ fn search(cx: &mut Context) {
 
 fn rsearch(cx: &mut Context) {
     flash_search_impl(cx, Direction::Backward);
+}
+
+fn search_completions(cx: &mut Context, reg: Option<char>) -> Vec<String> {
+    let mut items = reg
+        .and_then(|reg| cx.editor.registers.read(reg, cx.editor))
+        .map_or(Vec::new(), |reg| reg.take(200).collect());
+    items.sort_unstable();
+    items.dedup();
+    items.into_iter().map(|value| value.to_string()).collect()
+}
+
+fn regex_search(cx: &mut Context) {
+    regex_searcher(cx, Direction::Forward);
+}
+
+fn regex_rsearch(cx: &mut Context) {
+    regex_searcher(cx, Direction::Backward);
+}
+
+fn regex_searcher(cx: &mut Context, direction: Direction) {
+    let reg = cx.register.unwrap_or('/');
+    let config = cx.editor.config();
+    let scrolloff = config.scrolloff;
+    let wrap_around = config.search.wrap_around;
+    let movement = if cx.editor.mode() == Mode::Select {
+        Movement::Extend
+    } else {
+        Movement::Move
+    };
+
+    let completions = search_completions(cx, Some(reg));
+
+    ui::regex_prompt(
+        cx,
+        if direction == Direction::Forward {
+            "search:".into()
+        } else {
+            "rsearch:".into()
+        },
+        Some(reg),
+        move |_editor: &Editor, input: &str| {
+            completions
+                .iter()
+                .filter(|comp| comp.starts_with(input))
+                .map(|comp| (0.., comp.clone().into()))
+                .collect()
+        },
+        move |cx, regex, event| {
+            if event == PromptEvent::Validate {
+                cx.editor.registers.last_search_register = reg;
+            } else if event != PromptEvent::Update {
+                return;
+            }
+            search_impl(
+                cx.editor,
+                &regex,
+                movement,
+                direction,
+                scrolloff,
+                wrap_around,
+                false,
+            );
+        },
+    );
 }
 
 fn search_all(cx: &mut Context) {
