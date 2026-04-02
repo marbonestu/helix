@@ -98,6 +98,52 @@ pub struct FileNode {
     pub depth: u16,
 }
 
+/// Describes the active prompt in the file tree bottom row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptMode {
+    /// No prompt active — normal navigation.
+    None,
+    /// Incremental filename search (triggered by `/`).
+    Search,
+    /// New file name input. Stores the resolved target directory.
+    NewFile { parent_dir: PathBuf },
+    /// New directory name input.
+    NewDir { parent_dir: PathBuf },
+    /// Rename input. Carries the NodeId being renamed.
+    Rename(NodeId),
+    /// Duplicate name input. Carries the source NodeId.
+    Duplicate(NodeId),
+    /// Delete y/n confirmation. Carries the NodeId being deleted.
+    DeleteConfirm(NodeId),
+}
+
+/// Clipboard operation type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardOp {
+    Copy,
+    Cut,
+}
+
+/// Entry stored in the file tree clipboard.
+#[derive(Debug, Clone)]
+pub struct ClipboardEntry {
+    pub path: PathBuf,
+    pub op: ClipboardOp,
+}
+
+/// The resolved action from `prompt_confirm()`, ready to be dispatched to
+/// an async filesystem operation.
+#[derive(Debug, Clone)]
+pub enum PromptCommit {
+    Search,
+    NewFile { parent_dir: PathBuf, name: String },
+    NewDir { parent_dir: PathBuf, name: String },
+    Rename { old_path: PathBuf, new_name: String },
+    Duplicate { src_path: PathBuf, new_name: String },
+    DeleteConfirmed(PathBuf),
+    DeleteCancelled,
+}
+
 /// Updates sent from background threads to the main thread via channel.
 pub enum FileTreeUpdate {
     ChildrenLoaded {
@@ -108,6 +154,13 @@ pub enum FileTreeUpdate {
     ScanError {
         path: PathBuf,
         reason: String,
+    },
+    FsOpComplete {
+        refresh_parent: PathBuf,
+        select_path: Option<PathBuf>,
+    },
+    FsOpError {
+        message: String,
     },
 }
 
@@ -138,11 +191,16 @@ pub struct FileTree {
     follow_deadline: Option<Instant>,
     /// Path to reveal after an async directory load completes.
     pending_reveal: Option<PathBuf>,
-    /// Incremental search state.
-    search_query: String,
-    search_active: bool,
-    /// Selection to restore if search is cancelled with Esc.
-    pre_search_selected: usize,
+    /// Active prompt mode (search, new file, rename, delete confirm, etc.).
+    prompt_mode: PromptMode,
+    /// Text input shared by all prompt modes.
+    prompt_input: String,
+    /// Selection to restore if a prompt is cancelled with Esc.
+    pre_prompt_selected: usize,
+    /// Clipboard for copy/cut/paste.
+    clipboard: Option<ClipboardEntry>,
+    /// Transient status message shown in the bottom row when no prompt is active.
+    status_message: Option<String>,
 }
 
 impl std::fmt::Debug for FileTree {
@@ -198,9 +256,11 @@ impl FileTree {
             follow_target: None,
             follow_deadline: None,
             pending_reveal: None,
-            search_query: String::new(),
-            search_active: false,
-            pre_search_selected: 0,
+            prompt_mode: PromptMode::None,
+            prompt_input: String::new(),
+            pre_prompt_selected: 0,
+            clipboard: None,
+            status_message: None,
         };
 
         // Load root children synchronously so the tree is populated on
@@ -237,9 +297,11 @@ impl FileTree {
             follow_target: None,
             follow_deadline: None,
             pending_reveal: None,
-            search_query: String::new(),
-            search_active: false,
-            pre_search_selected: 0,
+            prompt_mode: PromptMode::None,
+            prompt_input: String::new(),
+            pre_prompt_selected: 0,
+            clipboard: None,
+            status_message: None,
         }
     }
 
@@ -517,6 +579,24 @@ impl FileTree {
                 FileTreeUpdate::ScanError { path, reason } => {
                     log::warn!("file tree: {}: {}", path.display(), reason);
                 }
+                FileTreeUpdate::FsOpComplete { refresh_parent, select_path } => {
+                    // Find the node for refresh_parent and mark it for re-scan
+                    let node_id = self.nodes.iter()
+                        .find(|(id, _)| self.node_path(*id) == refresh_parent)
+                        .map(|(id, _)| id);
+                    if let Some(id) = node_id {
+                        if let Some(node) = self.nodes.get_mut(id) {
+                            node.loaded = false;
+                        }
+                        self.spawn_load_children(id, config);
+                    }
+                    if let Some(path) = select_path {
+                        self.pending_reveal = Some(path);
+                    }
+                }
+                FileTreeUpdate::FsOpError { message } => {
+                    self.set_status(message);
+                }
             }
         }
 
@@ -673,63 +753,175 @@ impl FileTree {
         // viewport height is known.
     }
 
-    // --- Search ---
+    // --- Prompt mode ---
 
-    pub fn search_active(&self) -> bool {
-        self.search_active
+    pub fn prompt_mode(&self) -> &PromptMode {
+        &self.prompt_mode
     }
 
-    pub fn search_query(&self) -> &str {
-        &self.search_query
+    pub fn prompt_input(&self) -> &str {
+        &self.prompt_input
     }
 
-    pub fn search_start(&mut self) {
-        self.search_active = true;
-        self.search_query.clear();
-        self.pre_search_selected = self.selected;
-    }
-
-    pub fn search_push(&mut self, ch: char) {
-        self.search_query.push(ch);
-        self.search_jump_next_from(self.pre_search_selected);
-    }
-
-    pub fn search_pop(&mut self) {
-        self.search_query.pop();
-        if self.search_query.is_empty() {
-            self.selected = self.pre_search_selected;
-            self.ensure_selected_visible();
-        } else {
-            self.search_jump_next_from(self.pre_search_selected);
+    /// Append a character to the prompt input, and in search mode immediately
+    /// jump to the next matching entry.
+    pub fn prompt_push(&mut self, ch: char) {
+        self.prompt_input.push(ch);
+        if matches!(self.prompt_mode, PromptMode::Search) {
+            let from = self.pre_prompt_selected;
+            self.search_jump_next_from(from);
         }
     }
 
+    /// Remove the last character from the prompt input.
+    pub fn prompt_pop(&mut self) {
+        self.prompt_input.pop();
+        if matches!(self.prompt_mode, PromptMode::Search) {
+            if self.prompt_input.is_empty() {
+                self.selected = self.pre_prompt_selected;
+                self.ensure_selected_visible();
+            } else {
+                let from = self.pre_prompt_selected;
+                self.search_jump_next_from(from);
+            }
+        }
+    }
+
+    /// Cancel the active prompt, restoring state as if it was never started.
+    pub fn prompt_cancel(&mut self) {
+        if matches!(self.prompt_mode, PromptMode::Search) {
+            self.selected = self.pre_prompt_selected;
+            self.ensure_selected_visible();
+        }
+        self.prompt_mode = PromptMode::None;
+        self.prompt_input.clear();
+    }
+
+    /// Confirm the active prompt and return the commit action to dispatch.
+    pub fn prompt_confirm(&mut self) -> Option<PromptCommit> {
+        let commit = match &self.prompt_mode {
+            PromptMode::None => return None,
+            PromptMode::Search => {
+                self.prompt_mode = PromptMode::None;
+                Some(PromptCommit::Search)
+            }
+            PromptMode::NewFile { parent_dir } => {
+                let name = self.prompt_input.trim().to_string();
+                if name.is_empty() {
+                    self.prompt_mode = PromptMode::None;
+                    self.prompt_input.clear();
+                    return None;
+                }
+                let commit = PromptCommit::NewFile { parent_dir: parent_dir.clone(), name };
+                self.prompt_mode = PromptMode::None;
+                self.prompt_input.clear();
+                Some(commit)
+            }
+            PromptMode::NewDir { parent_dir } => {
+                let name = self.prompt_input.trim().to_string();
+                if name.is_empty() {
+                    self.prompt_mode = PromptMode::None;
+                    self.prompt_input.clear();
+                    return None;
+                }
+                let commit = PromptCommit::NewDir { parent_dir: parent_dir.clone(), name };
+                self.prompt_mode = PromptMode::None;
+                self.prompt_input.clear();
+                Some(commit)
+            }
+            PromptMode::Rename(id) => {
+                let new_name = self.prompt_input.trim().to_string();
+                if new_name.is_empty() {
+                    self.prompt_mode = PromptMode::None;
+                    self.prompt_input.clear();
+                    return None;
+                }
+                let old_path = self.node_path(*id);
+                let commit = PromptCommit::Rename { old_path, new_name };
+                self.prompt_mode = PromptMode::None;
+                self.prompt_input.clear();
+                Some(commit)
+            }
+            PromptMode::Duplicate(id) => {
+                let new_name = self.prompt_input.trim().to_string();
+                if new_name.is_empty() {
+                    self.prompt_mode = PromptMode::None;
+                    self.prompt_input.clear();
+                    return None;
+                }
+                let src_path = self.node_path(*id);
+                let commit = PromptCommit::Duplicate { src_path, new_name };
+                self.prompt_mode = PromptMode::None;
+                self.prompt_input.clear();
+                Some(commit)
+            }
+            PromptMode::DeleteConfirm(id) => {
+                // DeleteConfirm is handled character-by-character in the key
+                // handler, so Enter also confirms.
+                let path = self.node_path(*id);
+                self.prompt_mode = PromptMode::None;
+                self.prompt_input.clear();
+                Some(PromptCommit::DeleteConfirmed(path))
+            }
+        };
+        commit
+    }
+
+    // --- Search (compatibility wrappers) ---
+
+    pub fn search_active(&self) -> bool {
+        matches!(self.prompt_mode, PromptMode::Search)
+    }
+
+    pub fn search_query(&self) -> &str {
+        if matches!(self.prompt_mode, PromptMode::Search) {
+            &self.prompt_input
+        } else {
+            ""
+        }
+    }
+
+    pub fn search_start(&mut self) {
+        self.pre_prompt_selected = self.selected;
+        self.prompt_mode = PromptMode::Search;
+        self.prompt_input.clear();
+    }
+
+    pub fn search_push(&mut self, ch: char) {
+        self.prompt_push(ch);
+    }
+
+    pub fn search_pop(&mut self) {
+        self.prompt_pop();
+    }
+
     pub fn search_confirm(&mut self) {
-        self.search_active = false;
+        if matches!(self.prompt_mode, PromptMode::Search) {
+            self.prompt_mode = PromptMode::None;
+        }
     }
 
     pub fn search_cancel(&mut self) {
-        self.search_active = false;
-        self.search_query.clear();
-        self.selected = self.pre_search_selected;
-        self.ensure_selected_visible();
+        if matches!(self.prompt_mode, PromptMode::Search) {
+            self.prompt_cancel();
+        }
     }
 
-    /// Jump to the next match after `from`, wrapping around.
+    /// Jump to the next search match after the current selection, wrapping around.
     pub fn search_next(&mut self) {
-        if self.search_query.is_empty() {
+        if self.prompt_input.is_empty() {
             return;
         }
         let start = (self.selected + 1) % self.visible.len().max(1);
         self.search_jump_next_from(start);
     }
 
-    /// Jump to the previous match before current selection, wrapping around.
+    /// Jump to the previous search match before the current selection, wrapping around.
     pub fn search_prev(&mut self) {
-        if self.search_query.is_empty() || self.visible.is_empty() {
+        if self.prompt_input.is_empty() || self.visible.is_empty() {
             return;
         }
-        let query = self.search_query.to_lowercase();
+        let query = self.prompt_input.to_lowercase();
         let len = self.visible.len();
         for offset in 1..=len {
             let idx = (self.selected + len - offset) % len;
@@ -744,10 +936,10 @@ impl FileTree {
     }
 
     fn search_jump_next_from(&mut self, from: usize) {
-        if self.search_query.is_empty() || self.visible.is_empty() {
+        if self.prompt_input.is_empty() || self.visible.is_empty() {
             return;
         }
-        let query = self.search_query.to_lowercase();
+        let query = self.prompt_input.to_lowercase();
         let len = self.visible.len();
         for offset in 0..len {
             let idx = (from + offset) % len;
@@ -758,6 +950,110 @@ impl FileTree {
                     return;
                 }
             }
+        }
+    }
+
+    // --- File management prompts ---
+
+    /// Begin a new-file prompt, targeting the directory that contains the
+    /// currently selected node (or the node itself if it is a directory).
+    pub fn start_new_file(&mut self) {
+        let parent_dir = self.selected_dir_path().unwrap_or_else(|| self.root.clone());
+        self.pre_prompt_selected = self.selected;
+        self.prompt_input.clear();
+        self.prompt_mode = PromptMode::NewFile { parent_dir };
+    }
+
+    /// Begin a new-directory prompt, targeting the same parent as
+    /// `start_new_file`.
+    pub fn start_new_dir(&mut self) {
+        let parent_dir = self.selected_dir_path().unwrap_or_else(|| self.root.clone());
+        self.pre_prompt_selected = self.selected;
+        self.prompt_input.clear();
+        self.prompt_mode = PromptMode::NewDir { parent_dir };
+    }
+
+    /// Begin a rename prompt, pre-filling the input with the node's current name.
+    pub fn start_rename(&mut self, id: NodeId) {
+        let current_name = self.nodes.get(id).map(|n| n.name.clone()).unwrap_or_default();
+        self.pre_prompt_selected = self.selected;
+        self.prompt_input = current_name;
+        self.prompt_mode = PromptMode::Rename(id);
+    }
+
+    /// Begin a duplicate prompt, pre-filling with `<stem>.copy.<ext>` (or
+    /// `<name>.copy` for files without an extension).
+    pub fn start_duplicate(&mut self, id: NodeId) {
+        let name = self.nodes.get(id).map(|n| n.name.clone()).unwrap_or_default();
+        let suggested = {
+            let path = std::path::Path::new(&name);
+            match (path.file_stem(), path.extension()) {
+                (Some(stem), Some(ext)) => {
+                    format!("{}.copy.{}", stem.to_string_lossy(), ext.to_string_lossy())
+                }
+                _ => format!("{}.copy", name),
+            }
+        };
+        self.pre_prompt_selected = self.selected;
+        self.prompt_input = suggested;
+        self.prompt_mode = PromptMode::Duplicate(id);
+    }
+
+    /// Begin a delete-confirmation prompt.
+    pub fn start_delete_confirm(&mut self, id: NodeId) {
+        self.pre_prompt_selected = self.selected;
+        self.prompt_input.clear();
+        self.prompt_mode = PromptMode::DeleteConfirm(id);
+    }
+
+    // --- Clipboard ---
+
+    pub fn clipboard(&self) -> Option<&ClipboardEntry> {
+        self.clipboard.as_ref()
+    }
+
+    /// Copy the node at `id` to the clipboard (does not move the file).
+    pub fn yank(&mut self, id: NodeId) {
+        let path = self.node_path(id);
+        self.clipboard = Some(ClipboardEntry { path, op: ClipboardOp::Copy });
+    }
+
+    /// Cut the node at `id` into the clipboard (marks it for a move on paste).
+    pub fn cut(&mut self, id: NodeId) {
+        let path = self.node_path(id);
+        self.clipboard = Some(ClipboardEntry { path, op: ClipboardOp::Cut });
+    }
+
+    pub fn clear_clipboard(&mut self) {
+        self.clipboard = None;
+    }
+
+    // --- Status message ---
+
+    pub fn status_message(&self) -> Option<&str> {
+        self.status_message.as_deref()
+    }
+
+    pub fn set_status(&mut self, msg: impl Into<String>) {
+        self.status_message = Some(msg.into());
+    }
+
+    pub fn clear_status(&mut self) {
+        self.status_message = None;
+    }
+
+    // --- Path helpers ---
+
+    /// Returns the selected node's path if it is a directory, or the parent
+    /// directory path if it is a file.
+    pub fn selected_dir_path(&self) -> Option<PathBuf> {
+        let id = self.visible.get(self.selected).copied()?;
+        let node = self.nodes.get(id)?;
+        let path = self.node_path(id);
+        if node.kind == NodeKind::Directory {
+            Some(path)
+        } else {
+            path.parent().map(|p| p.to_path_buf())
         }
     }
 
@@ -1594,5 +1890,135 @@ mod tests {
             tree.follow_target.as_deref(),
             Some(Path::new("/tmp/project/src/lib.rs"))
         );
+    }
+
+    // --- Phase 6: file management unit tests ---
+
+    #[test]
+    fn test_prompt_mode_new_file() {
+        let (mut tree, _, src_id, main_id, _) = build_test_tree();
+        tree.rebuild_visible();
+        // Select main.rs (index 2 in DFS order: root, src, main.rs, lib.rs, cargo)
+        tree.selected = 2;
+
+        tree.start_new_file();
+        assert!(matches!(tree.prompt_mode, PromptMode::NewFile { .. }));
+        assert_eq!(tree.prompt_input, "");
+
+        tree.prompt_cancel();
+        assert!(matches!(tree.prompt_mode, PromptMode::None));
+        assert_eq!(tree.prompt_input, "");
+        let _ = (src_id, main_id); // suppress unused warnings
+    }
+
+    #[test]
+    fn test_prompt_mode_rename_prefills_name() {
+        let (mut tree, _, _, main_id, _) = build_test_tree();
+        tree.rebuild_visible();
+
+        tree.start_rename(main_id);
+        assert!(matches!(tree.prompt_mode, PromptMode::Rename(_)));
+        assert_eq!(tree.prompt_input, "main.rs");
+    }
+
+    #[test]
+    fn test_prompt_mode_duplicate_prefills_copy_name() {
+        let (mut tree, _, _, main_id, _) = build_test_tree();
+        tree.rebuild_visible();
+
+        tree.start_duplicate(main_id);
+        assert!(matches!(tree.prompt_mode, PromptMode::Duplicate(_)));
+        assert_eq!(tree.prompt_input, "main.copy.rs");
+    }
+
+    #[test]
+    fn test_prompt_mode_duplicate_no_extension() {
+        let mut nodes: SlotMap<NodeId, FileNode> = SlotMap::with_key();
+        let root_id = nodes.insert(FileNode {
+            name: "project".into(),
+            kind: NodeKind::Directory,
+            parent: None,
+            children: Vec::new(),
+            expanded: true,
+            loaded: true,
+            depth: 0,
+        });
+        let file_id = nodes.insert(FileNode {
+            name: "Makefile".into(),
+            kind: NodeKind::File,
+            parent: Some(root_id),
+            children: Vec::new(),
+            expanded: false,
+            loaded: false,
+            depth: 1,
+        });
+        nodes[root_id].children = vec![file_id];
+        let mut tree = FileTree::from_nodes(PathBuf::from("/tmp/project"), root_id, nodes);
+        tree.rebuild_visible();
+
+        tree.start_duplicate(file_id);
+        assert_eq!(tree.prompt_input, "Makefile.copy");
+    }
+
+    #[test]
+    fn test_prompt_input_accumulates() {
+        let (mut tree, _, _, _, _) = build_test_tree();
+        tree.start_new_file();
+
+        tree.prompt_push('h');
+        tree.prompt_push('e');
+        tree.prompt_push('l');
+        assert_eq!(tree.prompt_input, "hel");
+
+        tree.prompt_pop();
+        assert_eq!(tree.prompt_input, "he");
+
+        tree.prompt_pop();
+        tree.prompt_pop();
+        assert_eq!(tree.prompt_input, "");
+    }
+
+    #[test]
+    fn test_yank_and_cut() {
+        let (mut tree, _, _, main_id, cargo_id) = build_test_tree();
+
+        tree.yank(main_id);
+        let clip = tree.clipboard().unwrap();
+        assert_eq!(clip.path, PathBuf::from("/tmp/project/src/main.rs"));
+        assert_eq!(clip.op, ClipboardOp::Copy);
+
+        tree.cut(cargo_id);
+        let clip = tree.clipboard().unwrap();
+        assert_eq!(clip.path, PathBuf::from("/tmp/project/Cargo.toml"));
+        assert_eq!(clip.op, ClipboardOp::Cut);
+
+        tree.clear_clipboard();
+        assert!(tree.clipboard().is_none());
+    }
+
+    #[test]
+    fn test_selected_dir_path_on_file() {
+        let (mut tree, _, _, main_id, _) = build_test_tree();
+        tree.rebuild_visible();
+
+        // Select main.rs (index 2)
+        tree.selected = 2;
+        assert_eq!(tree.visible[2], main_id);
+
+        let dir = tree.selected_dir_path().unwrap();
+        assert_eq!(dir, PathBuf::from("/tmp/project/src"));
+    }
+
+    #[test]
+    fn test_selected_dir_path_on_directory() {
+        let (mut tree, _, src_id, _, _) = build_test_tree();
+        tree.rebuild_visible();
+
+        // Select src/ (index 1)
+        tree.selected = 1;
+        assert_eq!(tree.visible[1], src_id);
+
+        let dir = tree.selected_dir_path().unwrap();
+        assert_eq!(dir, PathBuf::from("/tmp/project/src"));
     }
 }
