@@ -1713,7 +1713,12 @@ impl EditorView {
             KeyCode::Char('y') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(ref mut tree) = cx.editor.file_tree {
                     if let Some(id) = tree.selected_id() {
+                        let path = tree.node_path(id);
+                        let display = path.file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string());
                         tree.yank(id);
+                        tree.set_status(format!("Yanked: {display}"));
                     }
                 }
                 EventResult::Consumed(None)
@@ -1721,7 +1726,12 @@ impl EditorView {
             KeyCode::Char('x') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(ref mut tree) = cx.editor.file_tree {
                     if let Some(id) = tree.selected_id() {
+                        let path = tree.node_path(id);
+                        let display = path.file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string());
                         tree.cut(id);
+                        tree.set_status(format!("Cut: {display}"));
                     }
                 }
                 EventResult::Consumed(None)
@@ -2165,6 +2175,16 @@ impl Component for EditorView {
 
         if let Some(ref mut tree) = cx.editor.file_tree {
             tree.process_updates(&config.file_tree, Some(&diff_providers));
+        }
+
+        // Open any file that was just created by a new-file operation.
+        let pending_open = cx.editor.file_tree.as_mut().and_then(|t| t.take_pending_open());
+        if let Some(path) = pending_open {
+            if let Err(e) = cx.editor.open(&path, helix_view::editor::Action::Replace) {
+                cx.editor.set_error(format!("{e}"));
+            } else {
+                cx.editor.file_tree_focused = false;
+            }
         }
 
         // if the terminal size suddenly changed, we need to trigger a resize

@@ -6,14 +6,29 @@ use tokio::sync::mpsc::Sender;
 use crate::file_tree::FileTreeUpdate;
 
 /// Spawn a blocking task that creates a new file and notifies the tree.
+///
+/// Sends `FsOpCreatedFile` on success so the editor can open the new file
+/// automatically, in addition to refreshing and revealing it in the tree.
 pub fn spawn_create_file(tx: Sender<FileTreeUpdate>, parent: PathBuf, name: String) {
     tokio::task::spawn_blocking(move || {
         let dest = parent.join(&name);
+        // Create intermediate directories if the name contains path separators.
+        if let Some(dir) = dest.parent() {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                if e.kind() != std::io::ErrorKind::AlreadyExists {
+                    let _ = tx.blocking_send(FileTreeUpdate::FsOpError {
+                        message: format!("Failed to create directories: {e}"),
+                    });
+                    helix_event::request_redraw();
+                    return;
+                }
+            }
+        }
         let result = std::fs::File::create(&dest).map(|_| ());
         let update = match result {
-            Ok(()) => FileTreeUpdate::FsOpComplete {
+            Ok(()) => FileTreeUpdate::FsOpCreatedFile {
+                path: dest,
                 refresh_parent: parent,
-                select_path: Some(dest),
             },
             Err(e) => FileTreeUpdate::FsOpError {
                 message: format!("Create file failed: {}", e),

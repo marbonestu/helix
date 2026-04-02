@@ -162,6 +162,12 @@ pub enum FileTreeUpdate {
     FsOpError {
         message: String,
     },
+    /// Sent by `spawn_create_file` on success — triggers a reveal *and* an
+    /// open in the editor (the distinction from `FsOpComplete`).
+    FsOpCreatedFile {
+        path: PathBuf,
+        refresh_parent: PathBuf,
+    },
 }
 
 pub struct FileTree {
@@ -191,6 +197,8 @@ pub struct FileTree {
     follow_deadline: Option<Instant>,
     /// Path to reveal after an async directory load completes.
     pending_reveal: Option<PathBuf>,
+    /// File path to open in the editor after a create-file op completes.
+    pending_open: Option<PathBuf>,
     /// Active prompt mode (search, new file, rename, delete confirm, etc.).
     prompt_mode: PromptMode,
     /// Text input shared by all prompt modes.
@@ -256,6 +264,7 @@ impl FileTree {
             follow_target: None,
             follow_deadline: None,
             pending_reveal: None,
+            pending_open: None,
             prompt_mode: PromptMode::None,
             prompt_input: String::new(),
             pre_prompt_selected: 0,
@@ -297,6 +306,7 @@ impl FileTree {
             follow_target: None,
             follow_deadline: None,
             pending_reveal: None,
+            pending_open: None,
             prompt_mode: PromptMode::None,
             prompt_input: String::new(),
             pre_prompt_selected: 0,
@@ -596,6 +606,19 @@ impl FileTree {
                 }
                 FileTreeUpdate::FsOpError { message } => {
                     self.set_status(message);
+                }
+                FileTreeUpdate::FsOpCreatedFile { path, refresh_parent } => {
+                    let node_id = self.nodes.iter()
+                        .find(|(id, _)| self.node_path(*id) == refresh_parent)
+                        .map(|(id, _)| id);
+                    if let Some(id) = node_id {
+                        if let Some(node) = self.nodes.get_mut(id) {
+                            node.loaded = false;
+                        }
+                        self.spawn_load_children(id, config);
+                    }
+                    self.pending_reveal = Some(path.clone());
+                    self.pending_open = Some(path);
                 }
             }
         }
@@ -1043,6 +1066,11 @@ impl FileTree {
     }
 
     // --- Path helpers ---
+
+    /// Takes the pending file-open path set by a file-creation op, clearing it.
+    pub fn take_pending_open(&mut self) -> Option<PathBuf> {
+        self.pending_open.take()
+    }
 
     /// Returns the selected node's path if it is a directory, or the parent
     /// directory path if it is a file.
