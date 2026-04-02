@@ -1495,6 +1495,16 @@ fn open_session_view(
                     doc.set_view_offset(view_id, vp);
                 }
 
+                // Load previously open buffers from this view's history so they
+                // appear in the buffer picker without being displayed.
+                for history_path in &sv.docs_access_history {
+                    if history_path.exists() {
+                        if let Err(e) = editor.open(history_path, Action::Load) {
+                            log::warn!("Failed to load history buffer {}: {e}", history_path.display());
+                        }
+                    }
+                }
+
                 Ok(true)
             }
             Err(e) => {

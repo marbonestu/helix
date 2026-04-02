@@ -148,10 +148,10 @@ Feature: Keyboard navigation within the file tree
       When Alex presses h
       Then the root row becomes selected
 
-  Rule: r refreshes the tree from the filesystem
+  Rule: R refreshes the tree from the filesystem
 
-    Example: r reloads directory contents
+    Example: R reloads directory contents
       Given the file tree is showing an outdated listing
-      When Alex presses r
+      When Alex presses R
       Then the tree re-scans the filesystem
       And any added or removed files are reflected in the listing

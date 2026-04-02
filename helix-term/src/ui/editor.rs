@@ -1576,6 +1576,44 @@ impl EditorView {
                 }
                 EventResult::Consumed(None)
             }
+            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                cx.editor.file_tree_focused = false;
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let open_path = cx.editor.file_tree.as_ref().and_then(|tree| {
+                    let id = tree.selected_id()?;
+                    matches!(tree.nodes().get(id).map(|n| n.kind), Some(NodeKind::File))
+                        .then(|| tree.node_path(id))
+                });
+                if let Some(path) = open_path {
+                    if let Err(e) =
+                        cx.editor.open(&path, helix_view::editor::Action::VerticalSplit)
+                    {
+                        cx.editor.set_error(format!("{}", e));
+                    } else {
+                        cx.editor.file_tree_focused = false;
+                    }
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let open_path = cx.editor.file_tree.as_ref().and_then(|tree| {
+                    let id = tree.selected_id()?;
+                    matches!(tree.nodes().get(id).map(|n| n.kind), Some(NodeKind::File))
+                        .then(|| tree.node_path(id))
+                });
+                if let Some(path) = open_path {
+                    if let Err(e) =
+                        cx.editor.open(&path, helix_view::editor::Action::HorizontalSplit)
+                    {
+                        cx.editor.set_error(format!("{}", e));
+                    } else {
+                        cx.editor.file_tree_focused = false;
+                    }
+                }
+                EventResult::Consumed(None)
+            }
             KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
                 let open_path = if let Some(ref mut tree) = cx.editor.file_tree {
                     if let Some(id) = tree.selected_id() {

@@ -502,7 +502,7 @@ impl FileTree {
                     use std::hash::{Hash, Hasher};
                     let mut hasher = std::collections::hash_map::DefaultHasher::new();
                     let mut entries: Vec<_> = self.git_status_map.iter().collect();
-                    entries.sort_by_key(|(p, _)| p.clone());
+                    entries.sort_by_key(|(p, _)| (*p).clone());
                     for (path, status) in &entries {
                         path.hash(&mut hasher);
                         status.severity().hash(&mut hasher);

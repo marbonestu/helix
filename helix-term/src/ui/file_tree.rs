@@ -128,8 +128,8 @@ pub fn render_file_tree(
                 .or_else(|| theme.try_get("diff.delta")),
             GitStatus::Untracked => theme
                 .try_get("ui.sidebar.git.untracked")
-                .or_else(|| theme.try_get("hint"))
-                .or_else(|| theme.try_get("diff.plus")),
+                .or_else(|| theme.try_get("comment"))
+                .or_else(|| theme.try_get("ui.text.inactive")),
             GitStatus::Deleted => theme
                 .try_get("ui.sidebar.git.deleted")
                 .or_else(|| theme.try_get("error"))
