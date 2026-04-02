@@ -232,9 +232,13 @@ pub fn render_file_tree(
             PromptMode::NewDir { .. } => format!("New dir: {}", tree.prompt_input()),
             PromptMode::Rename(_) => format!("Rename to: {}", tree.prompt_input()),
             PromptMode::Duplicate(_) => format!("Duplicate as: {}", tree.prompt_input()),
-            PromptMode::DeleteConfirm(id) => {
+            PromptMode::DeleteConfirm { id, is_dir } => {
                 let name = tree.nodes().get(*id).map(|n| n.name.as_str()).unwrap_or("?");
-                format!("Delete '{}'? [y/n]", name)
+                if *is_dir {
+                    format!("Delete '{name}/' and all contents? [y/n]")
+                } else {
+                    format!("Delete '{name}'? [y/n]")
+                }
             }
             PromptMode::None => {
                 // Show status message in a dimmed style

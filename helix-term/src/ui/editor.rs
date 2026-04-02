@@ -1550,7 +1550,7 @@ impl EditorView {
                         .editor
                         .file_tree
                         .as_ref()
-                        .map_or(false, |t| matches!(t.prompt_mode(), PromptMode::DeleteConfirm(_)));
+                        .map_or(false, |t| matches!(t.prompt_mode(), PromptMode::DeleteConfirm { .. }));
 
                     if is_delete_confirm {
                         let commit = if ch == 'y' {
@@ -1770,7 +1770,11 @@ impl EditorView {
             KeyCode::Char('D') => {
                 if let Some(ref mut tree) = cx.editor.file_tree {
                     if let Some(id) = tree.selected_id() {
-                        tree.start_duplicate(id);
+                        if tree.nodes().get(id).map(|n| n.kind) == Some(NodeKind::Directory) {
+                            tree.set_status("Duplicate is only available for files");
+                        } else {
+                            tree.start_duplicate(id);
+                        }
                     }
                 }
                 EventResult::Consumed(None)

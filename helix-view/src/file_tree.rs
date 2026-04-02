@@ -113,8 +113,9 @@ pub enum PromptMode {
     Rename(NodeId),
     /// Duplicate name input. Carries the source NodeId.
     Duplicate(NodeId),
-    /// Delete y/n confirmation. Carries the NodeId being deleted.
-    DeleteConfirm(NodeId),
+    /// Delete y/n confirmation. Carries the NodeId being deleted and whether
+    /// the target is a directory (affects the confirmation prompt text).
+    DeleteConfirm { id: NodeId, is_dir: bool },
 }
 
 /// Clipboard operation type.
@@ -878,7 +879,7 @@ impl FileTree {
                 self.prompt_input.clear();
                 Some(commit)
             }
-            PromptMode::DeleteConfirm(id) => {
+            PromptMode::DeleteConfirm { id, .. } => {
                 // DeleteConfirm is handled character-by-character in the key
                 // handler, so Enter also confirms.
                 let path = self.node_path(*id);
@@ -1024,9 +1025,10 @@ impl FileTree {
 
     /// Begin a delete-confirmation prompt.
     pub fn start_delete_confirm(&mut self, id: NodeId) {
+        let is_dir = self.nodes.get(id).map(|n| n.kind == NodeKind::Directory).unwrap_or(false);
         self.pre_prompt_selected = self.selected;
         self.prompt_input.clear();
-        self.prompt_mode = PromptMode::DeleteConfirm(id);
+        self.prompt_mode = PromptMode::DeleteConfirm { id, is_dir };
     }
 
     // --- Clipboard ---
