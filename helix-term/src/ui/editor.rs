@@ -1916,6 +1916,16 @@ impl EditorView {
                 cx.editor.file_tree_focused = false;
                 EventResult::Ignored(None)
             }
+            // 's' — grep/search inside the selected directory
+            KeyCode::Char('s') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let dir = cx.editor.file_tree.as_ref()
+                    .and_then(|t| t.selected_dir_path());
+                if let Some(dir) = dir {
+                    cx.editor.file_tree_focused = false;
+                    commands::global_search_in_dir(cx, dir);
+                }
+                EventResult::Consumed(None)
+            }
             _ => EventResult::Consumed(None),
         }
     }

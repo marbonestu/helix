@@ -2538,6 +2538,10 @@ fn make_search_word_bounded(cx: &mut Context) {
 }
 
 fn global_search(cx: &mut Context) {
+    global_search_in_dir(cx, helix_stdx::env::current_working_dir());
+}
+
+pub(crate) fn global_search_in_dir(cx: &mut Context, search_root: PathBuf) {
     #[derive(Debug)]
     struct FileResult {
         path: PathBuf,
@@ -2563,6 +2567,7 @@ fn global_search(cx: &mut Context) {
         directory_style: Style,
         number_style: Style,
         colon_style: Style,
+        search_root: PathBuf,
     }
 
     let config = cx.editor.config();
@@ -2572,6 +2577,7 @@ fn global_search(cx: &mut Context) {
         directory_style: cx.editor.theme.get("ui.text.directory"),
         number_style: cx.editor.theme.get("constant.numeric.integer"),
         colon_style: cx.editor.theme.get("punctuation"),
+        search_root: search_root.clone(),
     };
 
     let columns = [
@@ -2600,6 +2606,11 @@ fn global_search(cx: &mut Context) {
         PickerColumn::hidden("contents"),
     ];
 
+    if !search_root.exists() {
+        cx.editor.set_error("Search directory does not exist");
+        return;
+    }
+
     let get_files = |query: &str,
                      editor: &mut Editor,
                      config: std::sync::Arc<GlobalSearchConfig>,
@@ -2608,11 +2619,7 @@ fn global_search(cx: &mut Context) {
             return async { Ok(()) }.boxed();
         }
 
-        let search_root = helix_stdx::env::current_working_dir();
-        if !search_root.exists() {
-            return async { Err(anyhow::anyhow!("Current working directory does not exist")) }
-                .boxed();
-        }
+        let search_root = config.search_root.clone();
 
         let documents: Vec<_> = editor
             .documents()
