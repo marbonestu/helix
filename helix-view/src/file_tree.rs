@@ -213,6 +213,8 @@ pub struct FileTree {
     prompt_mode: PromptMode,
     /// Text input shared by all prompt modes.
     prompt_input: String,
+    /// Byte offset of the cursor within `prompt_input`.
+    prompt_cursor: usize,
     /// Selection to restore if a prompt is cancelled with Esc.
     pre_prompt_selected: usize,
     /// Clipboard for copy/cut/paste.
@@ -277,6 +279,7 @@ impl FileTree {
             pending_open: None,
             prompt_mode: PromptMode::None,
             prompt_input: String::new(),
+            prompt_cursor: 0,
             pre_prompt_selected: 0,
             clipboard: None,
             status_message: None,
@@ -319,6 +322,7 @@ impl FileTree {
             pending_open: None,
             prompt_mode: PromptMode::None,
             prompt_input: String::new(),
+            prompt_cursor: 0,
             pre_prompt_selected: 0,
             clipboard: None,
             status_message: None,
@@ -796,19 +800,39 @@ impl FileTree {
         &self.prompt_input
     }
 
-    /// Append a character to the prompt input, and in search mode immediately
-    /// jump to the next matching entry.
+    /// Byte offset of the cursor within the prompt input.
+    pub fn prompt_cursor(&self) -> usize {
+        self.prompt_cursor
+    }
+
+    /// Set prompt input text and place the cursor at the end.
+    fn set_prompt_input(&mut self, text: String) {
+        self.prompt_cursor = text.len();
+        self.prompt_input = text;
+    }
+
+    /// Insert a character at the cursor position, then advance the cursor.
     pub fn prompt_push(&mut self, ch: char) {
-        self.prompt_input.push(ch);
+        self.prompt_input.insert(self.prompt_cursor, ch);
+        self.prompt_cursor += ch.len_utf8();
         if matches!(self.prompt_mode, PromptMode::Search) {
             let from = self.pre_prompt_selected;
             self.search_jump_next_from(from);
         }
     }
 
-    /// Remove the last character from the prompt input.
+    /// Delete the character immediately before the cursor (backspace).
     pub fn prompt_pop(&mut self) {
-        self.prompt_input.pop();
+        if self.prompt_cursor == 0 {
+            return;
+        }
+        // Step back to the start of the previous UTF-8 character.
+        let mut new_cursor = self.prompt_cursor - 1;
+        while !self.prompt_input.is_char_boundary(new_cursor) {
+            new_cursor -= 1;
+        }
+        self.prompt_input.remove(new_cursor);
+        self.prompt_cursor = new_cursor;
         if matches!(self.prompt_mode, PromptMode::Search) {
             if self.prompt_input.is_empty() {
                 self.selected = self.pre_prompt_selected;
@@ -820,6 +844,30 @@ impl FileTree {
         }
     }
 
+    /// Move the cursor one grapheme to the left.
+    pub fn prompt_cursor_left(&mut self) {
+        if self.prompt_cursor == 0 {
+            return;
+        }
+        let mut pos = self.prompt_cursor - 1;
+        while !self.prompt_input.is_char_boundary(pos) {
+            pos -= 1;
+        }
+        self.prompt_cursor = pos;
+    }
+
+    /// Move the cursor one grapheme to the right.
+    pub fn prompt_cursor_right(&mut self) {
+        if self.prompt_cursor >= self.prompt_input.len() {
+            return;
+        }
+        let ch = self.prompt_input[self.prompt_cursor..]
+            .chars()
+            .next()
+            .unwrap();
+        self.prompt_cursor += ch.len_utf8();
+    }
+
     /// Cancel the active prompt, restoring state as if it was never started.
     pub fn prompt_cancel(&mut self) {
         if matches!(self.prompt_mode, PromptMode::Search) {
@@ -828,6 +876,7 @@ impl FileTree {
         }
         self.prompt_mode = PromptMode::None;
         self.prompt_input.clear();
+        self.prompt_cursor = 0;
     }
 
     /// Confirm the active prompt and return the commit action to dispatch.
@@ -1017,7 +1066,7 @@ impl FileTree {
     pub fn start_rename(&mut self, id: NodeId) {
         let current_name = self.nodes.get(id).map(|n| n.name.clone()).unwrap_or_default();
         self.pre_prompt_selected = self.selected;
-        self.prompt_input = current_name;
+        self.set_prompt_input(current_name);
         self.prompt_mode = PromptMode::Rename(id);
     }
 
@@ -1035,7 +1084,7 @@ impl FileTree {
             }
         };
         self.pre_prompt_selected = self.selected;
-        self.prompt_input = suggested;
+        self.set_prompt_input(suggested);
         self.prompt_mode = PromptMode::Duplicate(id);
     }
 

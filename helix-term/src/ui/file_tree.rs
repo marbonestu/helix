@@ -226,11 +226,10 @@ pub fn render_file_tree(
             .try_get("ui.sidebar.search")
             .unwrap_or_else(|| theme.get("ui.text"));
 
-        // For text-input modes, split into a label and the editable input so
-        // we can render a block cursor immediately after the input text.
+        // For text-input modes, split into label + before-cursor + cursor char + after-cursor.
         enum PromptContent<'a> {
-            /// label + editable input — cursor rendered after input
-            Input { label: &'a str, input: &'a str },
+            /// label, full input string, cursor byte offset
+            Input { label: &'a str, input: &'a str, cursor: usize },
             /// static confirmation text — no cursor
             Static(String),
         }
@@ -239,22 +238,27 @@ pub fn render_file_tree(
             PromptMode::Search => PromptContent::Input {
                 label: "/",
                 input: tree.search_query(),
+                cursor: tree.search_query().len(), // search cursor always at end
             },
             PromptMode::NewFile { .. } => PromptContent::Input {
                 label: "New file: ",
                 input: tree.prompt_input(),
+                cursor: tree.prompt_cursor(),
             },
             PromptMode::NewDir { .. } => PromptContent::Input {
                 label: "New dir: ",
                 input: tree.prompt_input(),
+                cursor: tree.prompt_cursor(),
             },
             PromptMode::Rename(_) => PromptContent::Input {
                 label: "Rename to: ",
                 input: tree.prompt_input(),
+                cursor: tree.prompt_cursor(),
             },
             PromptMode::Duplicate(_) => PromptContent::Input {
                 label: "Duplicate as: ",
                 input: tree.prompt_input(),
+                cursor: tree.prompt_cursor(),
             },
             PromptMode::DeleteConfirm { id, is_dir } => {
                 let name = tree.nodes().get(*id).map(|n| n.name.as_str()).unwrap_or("?");
@@ -275,26 +279,35 @@ pub fn render_file_tree(
         };
 
         match content {
-            PromptContent::Input { label, input } => {
+            PromptContent::Input { label, input, cursor } => {
                 let mut x = content_area.x;
                 let remaining = |x: u16| (content_area.x + content_area.width).saturating_sub(x) as usize;
 
-                // Render the label in a slightly dimmed style so the input stands out
+                // Dimmed label
                 let label_style = prompt_style.add_modifier(Modifier::DIM);
                 let label_width = label.chars().count() as u16;
                 surface.set_stringn(x, prompt_y, label, remaining(x), label_style);
                 x += label_width;
 
-                // Render the typed input
-                let input_width = input.chars().count() as u16;
-                surface.set_stringn(x, prompt_y, input, remaining(x), prompt_style);
-                x += input_width;
+                // Text before the cursor
+                let before = &input[..cursor.min(input.len())];
+                let before_width = before.chars().count() as u16;
+                surface.set_stringn(x, prompt_y, before, remaining(x), prompt_style);
+                x += before_width;
 
-                // Render the block cursor
+                // The cursor cell: the character under the cursor (or a space at end)
+                let cursor_style = prompt_style.add_modifier(Modifier::REVERSED);
+                let after = &input[cursor.min(input.len())..];
+                let cursor_ch = after.chars().next().unwrap_or(' ');
+                let cursor_ch_width = cursor_ch.len_utf8(); // byte width for slicing
                 if remaining(x) > 0 {
-                    let cursor_style = prompt_style.add_modifier(Modifier::REVERSED);
-                    surface.set_string(x, prompt_y, " ", cursor_style);
+                    let next = surface.set_stringn(x, prompt_y, cursor_ch.to_string(), remaining(x), cursor_style);
+                    x = next.0;
                 }
+
+                // Text after the cursor
+                let after_cursor = &after[cursor_ch_width.min(after.len())..];
+                surface.set_stringn(x, prompt_y, after_cursor, remaining(x), prompt_style);
             }
             PromptContent::Static(text) => {
                 surface.set_stringn(content_area.x, prompt_y, &text, content_width, prompt_style);

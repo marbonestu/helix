@@ -1545,6 +1545,18 @@ impl EditorView {
                     }
                     return EventResult::Consumed(None);
                 }
+                KeyCode::Left => {
+                    if let Some(ref mut tree) = cx.editor.file_tree {
+                        tree.prompt_cursor_left();
+                    }
+                    return EventResult::Consumed(None);
+                }
+                KeyCode::Right => {
+                    if let Some(ref mut tree) = cx.editor.file_tree {
+                        tree.prompt_cursor_right();
+                    }
+                    return EventResult::Consumed(None);
+                }
                 KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     if let Some(ref mut tree) = cx.editor.file_tree {
                         if matches!(tree.prompt_mode(), PromptMode::Search) {
