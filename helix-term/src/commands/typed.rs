@@ -119,6 +119,16 @@ fn quit(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow
     }
 
     cx.block_try_flush_writes()?;
+
+    // Save the session before closing the last view so the tree is still intact.
+    if cx.editor.tree.views().count() == 1 && cx.editor.config().session.persist {
+        let scope = &cx.editor.config().session.scope.clone();
+        let snapshot = helix_view::session::SessionSnapshot::capture_with_scope(cx.editor, scope);
+        if let Err(e) = helix_view::session::save_session(&snapshot) {
+            log::warn!("Failed to save session on quit: {e}");
+        }
+    }
+
     cx.editor.close(view!(cx.editor).id);
 
     Ok(())
@@ -962,6 +972,15 @@ fn quit_all_impl(cx: &mut compositor::Context, force: bool) -> anyhow::Result<()
     cx.block_try_flush_writes()?;
     if !force {
         buffers_remaining_impl(cx.editor)?;
+    }
+
+    // Save the session before closing any views so the tree is still intact.
+    if cx.editor.config().session.persist {
+        let scope = &cx.editor.config().session.scope.clone();
+        let snapshot = helix_view::session::SessionSnapshot::capture_with_scope(cx.editor, scope);
+        if let Err(e) = helix_view::session::save_session(&snapshot) {
+            log::warn!("Failed to save session on quit-all: {e}");
+        }
     }
 
     // close all views
@@ -2855,6 +2874,130 @@ fn echo(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow:
     Ok(())
 }
 
+fn session_save(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let scope = &cx.editor.config().session.scope;
+    let snapshot = helix_view::session::SessionSnapshot::capture_with_scope(cx.editor, scope);
+
+    let result = if args.is_empty() {
+        helix_view::session::save_session(&snapshot)
+    } else {
+        helix_view::session::save_named_session(&args[0], &snapshot)
+    };
+
+    match result {
+        Ok(()) => {
+            let label = if args.is_empty() {
+                "Session saved".to_string()
+            } else {
+                format!("Session '{}' saved", &args[0])
+            };
+            cx.editor.set_status(label);
+        }
+        Err(e) => cx.editor.set_error(format!("Failed to save session: {e}")),
+    }
+    Ok(())
+}
+
+fn session_restore(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let result = if args.is_empty() {
+        helix_view::session::load_session()
+    } else {
+        helix_view::session::load_named_session(&args[0])
+    };
+
+    match result {
+        Ok(snapshot) => {
+            match crate::application::restore_session(cx.editor, snapshot) {
+                Ok(()) => {}
+                Err(e) => cx.editor.set_error(format!("Failed to restore session: {e}")),
+            }
+        }
+        Err(e) => {
+            let label = if args.is_empty() {
+                format!("No session found: {e}")
+            } else {
+                format!("No session '{}' found: {e}", &args[0])
+            };
+            cx.editor.set_error(label);
+        }
+    }
+    Ok(())
+}
+
+fn session_delete(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let result = if args.is_empty() {
+        helix_view::session::delete_session()
+    } else {
+        helix_view::session::delete_named_session(&args[0])
+    };
+
+    match result {
+        Ok(()) => {
+            let label = if args.is_empty() {
+                "Session deleted".to_string()
+            } else {
+                format!("Session '{}' deleted", &args[0])
+            };
+            cx.editor.set_status(label);
+        }
+        Err(e) => cx.editor.set_error(format!("Failed to delete session: {e}")),
+    }
+    Ok(())
+}
+
+fn session_list(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    match helix_view::session::list_sessions() {
+        Ok(sessions) if sessions.is_empty() => {
+            cx.editor.set_status("No saved sessions");
+        }
+        Ok(sessions) => {
+            let listing: Vec<String> = sessions
+                .iter()
+                .map(|s| {
+                    format!(
+                        "{}: {} file{}, {}",
+                        s.name,
+                        s.file_count,
+                        if s.file_count == 1 { "" } else { "s" },
+                        s.working_directory.display()
+                    )
+                })
+                .collect();
+            cx.editor.set_status(listing.join("\n"));
+        }
+        Err(e) => cx.editor.set_error(format!("Failed to list sessions: {e}")),
+    }
+    Ok(())
+}
+
 fn noop(_cx: &mut compositor::Context, _args: Args, _event: PromptEvent) -> anyhow::Result<()> {
     Ok(())
 }
@@ -3962,6 +4105,50 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (1, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "session-save",
+        aliases: &["ss"],
+        doc: "Save the current editor session. Optionally accepts a session name.",
+        fun: session_save,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "session-restore",
+        aliases: &["sr"],
+        doc: "Restore a previously saved session. Optionally accepts a session name.",
+        fun: session_restore,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "session-delete",
+        aliases: &["sd"],
+        doc: "Delete the saved session file. Optionally accepts a session name.",
+        fun: session_delete,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "session-list",
+        aliases: &["sl"],
+        doc: "List all saved sessions.",
+        fun: session_list,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
             ..Signature::DEFAULT
         },
     },

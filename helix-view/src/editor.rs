@@ -437,6 +437,8 @@ pub struct Config {
     pub buffer_picker: BufferPickerConfig,
     /// Whether to implicitly trust every workspace or not
     pub insecure: bool,
+    /// Session persistence configuration
+    pub session: SessionConfig,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, Clone, Copy)]
@@ -488,6 +490,33 @@ impl Default for SmartTabConfig {
             supersede_menu: false,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct SessionConfig {
+    /// Enable automatic session save/restore
+    pub persist: bool,
+    /// What to persist: "layout" (default), "full" (Phase 2)
+    pub scope: SessionScope,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            persist: false,
+            scope: SessionScope::Layout,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionScope {
+    /// Buffers, layout, cursors, scroll positions
+    Layout,
+    /// Layout + registers, search history (Phase 2)
+    Full,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1182,6 +1211,7 @@ impl Default for Config {
             kitty_keyboard_protocol: Default::default(),
             buffer_picker: BufferPickerConfig::default(),
             insecure: false,
+            session: SessionConfig::default(),
         }
     }
 }

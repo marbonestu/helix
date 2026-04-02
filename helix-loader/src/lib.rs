@@ -261,8 +261,14 @@ pub fn merge_toml_values(left: toml::Value, right: toml::Value, merge_depth: usi
 /// This function starts searching the FS upward from the CWD
 /// and returns the first directory that contains either `.git`, `.svn`, `.jj` or `.helix`.
 /// If no workspace was found returns (CWD, true).
-/// Otherwise (workspace, false) is returned
+/// Otherwise (workspace, false) is returned.
+///
+/// The `HELIX_WORKSPACE` environment variable can override this search, which
+/// is useful for tests that need a known, isolated workspace directory.
 pub fn find_workspace() -> (PathBuf, bool) {
+    if let Ok(p) = std::env::var("HELIX_WORKSPACE") {
+        return (PathBuf::from(p), true);
+    }
     let current_dir = current_working_dir();
     find_workspace_in(current_dir)
 }

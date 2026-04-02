@@ -40,6 +40,10 @@ impl Registers {
         }
     }
 
+    pub fn inner(&self) -> &HashMap<char, Vec<String>> {
+        &self.inner
+    }
+
     pub fn read<'a>(&'a self, name: char, editor: &'a Editor) -> Option<RegisterValues<'a>> {
         match name {
             '_' => Some(RegisterValues::new(iter::empty())),
