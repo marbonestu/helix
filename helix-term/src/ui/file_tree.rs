@@ -71,11 +71,12 @@ pub fn render_file_tree(
     let file_style = theme
         .try_get("ui.sidebar.file")
         .unwrap_or_else(|| theme.get("ui.text"));
-    // Directories prefer ui.text.directory (most themes define a blue-ish
-    // color there) and fall back to the plain text color.
+    // Directories use the same color as function names — most themes give
+    // functions a distinctive color that works well for folder labels too.
+    // Theme authors can override with ui.sidebar.directory.
     let dir_style = theme
         .try_get("ui.sidebar.directory")
-        .or_else(|| theme.try_get("ui.text.directory"))
+        .or_else(|| theme.try_get("function"))
         .unwrap_or_else(|| theme.get("ui.text"));
 
     // Reserve bottom row for search prompt when active
