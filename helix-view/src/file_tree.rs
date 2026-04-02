@@ -160,6 +160,9 @@ pub enum FileTreeUpdate {
         parent: NodeId,
         entries: Vec<(String, NodeKind)>,
     },
+    /// Sent once before the first `GitStatus` batch of a refresh cycle so
+    /// stale entries from the previous cycle can be discarded.
+    GitStatusBegin,
     GitStatus(Vec<(PathBuf, GitStatus)>),
     ScanError {
         path: PathBuf,
@@ -198,6 +201,9 @@ pub struct FileTree {
     git_status_map: HashMap<PathBuf, GitStatus>,
     /// Pre-computed worst status per directory path.
     dir_status_cache: HashMap<PathBuf, GitStatus>,
+    /// Set to true when `GitStatusBegin` is received; cleared after the map
+    /// is wiped on the next incoming `GitStatus` message.
+    git_status_refresh_pending: bool,
     /// Hash of the last raw git status output for change detection.
     last_git_status_hash: Option<u64>,
     /// Debounce timer for git status refresh (1000ms).
@@ -271,6 +277,7 @@ impl FileTree {
             update_rx,
             git_status_map: HashMap::new(),
             dir_status_cache: HashMap::new(),
+            git_status_refresh_pending: false,
             last_git_status_hash: None,
             git_refresh_deadline: None,
             follow_target: None,
@@ -314,6 +321,7 @@ impl FileTree {
             update_rx,
             git_status_map: HashMap::new(),
             dir_status_cache: HashMap::new(),
+            git_status_refresh_pending: false,
             last_git_status_hash: None,
             git_refresh_deadline: None,
             follow_target: None,
@@ -580,7 +588,14 @@ impl FileTree {
                     }
                     self.visible_dirty = true;
                 }
+                FileTreeUpdate::GitStatusBegin => {
+                    self.git_status_refresh_pending = true;
+                }
                 FileTreeUpdate::GitStatus(statuses) => {
+                    if self.git_status_refresh_pending {
+                        self.git_status_map.clear();
+                        self.git_status_refresh_pending = false;
+                    }
                     for (path, status) in statuses {
                         self.git_status_map.insert(path, status);
                     }
@@ -651,6 +666,18 @@ impl FileTree {
         self.dir_status_cache.clear();
 
         for (path, &status) in &self.git_status_map {
+            // If the entry itself is a directory (e.g. an untracked dir reported
+            // by git), record it directly in the cache.
+            if path.is_dir() {
+                let entry = self
+                    .dir_status_cache
+                    .entry(path.clone())
+                    .or_insert(GitStatus::Clean);
+                if status.severity() > entry.severity() {
+                    *entry = status;
+                }
+            }
+
             let mut ancestor = path.parent();
             while let Some(dir) = ancestor {
                 if dir < self.root.as_path() {
@@ -1328,6 +1355,10 @@ impl FileTree {
     fn spawn_git_status(&self, diff_providers: DiffProviderRegistry) {
         let tx = self.update_tx.clone();
         let root = self.root.clone();
+
+        // Signal that a new refresh cycle is starting so stale entries from
+        // the previous cycle are discarded when the first result arrives.
+        let _ = tx.try_send(FileTreeUpdate::GitStatusBegin);
 
         diff_providers.for_each_changed_file(root, move |result| {
             if let Ok(change) = result {
