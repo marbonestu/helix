@@ -1,5 +1,6 @@
 use crate::{graphics::Rect, View, ViewId};
 use slotmap::SlotMap;
+use std::collections::HashMap;
 
 const MIN_SPLIT_WIDTH: u16 = 10;
 const MIN_SPLIT_HEIGHT: u16 = 3;
@@ -11,13 +12,22 @@ pub struct Tree {
     root: ViewId,
     // (container, index inside the container)
     pub focus: ViewId,
-    // fullscreen: bool,
     area: Rect,
 
     nodes: SlotMap<ViewId, Node>,
 
     // used for traversals
     stack: Vec<(ViewId, Rect)>,
+
+    /// Non-None while a split is zoomed. Stores pre-zoom weights so unzoom restores exactly.
+    zoom_state: Option<ZoomState>,
+}
+
+#[derive(Debug)]
+struct ZoomState {
+    zoomed_view: ViewId,
+    /// Saved weights keyed by container ViewId, restored verbatim on unzoom.
+    saved_weights: HashMap<ViewId, Vec<f64>>,
 }
 
 #[derive(Debug)]
@@ -110,10 +120,10 @@ impl Tree {
         Self {
             root,
             focus: root,
-            // fullscreen: false,
             area,
             nodes,
             stack: Vec::new(),
+            zoom_state: None,
         }
     }
 
@@ -157,6 +167,7 @@ impl Tree {
     }
 
     pub fn split(&mut self, view: View, layout: Layout) -> ViewId {
+        self.unzoom();
         let focus = self.focus;
         let parent = self.nodes[focus].parent;
 
@@ -320,6 +331,75 @@ impl Tree {
         }
     }
 
+    /// Toggle zoom on the focused split. If already zoomed, unzoom; otherwise zoom.
+    pub fn toggle_zoom(&mut self) {
+        if self.zoom_state.is_some() {
+            self.unzoom();
+        } else {
+            self.zoom();
+        }
+    }
+
+    pub fn is_zoomed(&self) -> bool {
+        self.zoom_state.is_some()
+    }
+
+    fn zoom(&mut self) {
+        let focus = self.focus;
+        let mut saved_weights = HashMap::new();
+
+        let mut current = focus;
+        loop {
+            let parent_id = self.nodes[current].parent;
+            if parent_id == current {
+                break; // reached root
+            }
+            let container = match &self.nodes[parent_id].content {
+                Content::Container(c) => c,
+                _ => unreachable!(),
+            };
+
+            saved_weights.insert(parent_id, container.weights.clone());
+
+            let pos = container
+                .children
+                .iter()
+                .position(|&id| id == current)
+                .unwrap();
+
+            let container = self.container_mut(parent_id);
+            for (i, w) in container.weights.iter_mut().enumerate() {
+                *w = if i == pos { 10.0 } else { 0.1 };
+            }
+
+            current = parent_id;
+        }
+
+        self.zoom_state = Some(ZoomState {
+            zoomed_view: focus,
+            saved_weights,
+        });
+
+        self.recalculate();
+    }
+
+    fn unzoom(&mut self) {
+        let state = match self.zoom_state.take() {
+            Some(s) => s,
+            None => return,
+        };
+
+        for (container_id, weights) in state.saved_weights {
+            if let Some(node) = self.nodes.get_mut(container_id) {
+                if let Content::Container(container) = &mut node.content {
+                    container.weights = weights;
+                }
+            }
+        }
+
+        self.recalculate();
+    }
+
     fn remove_or_replace(&mut self, child: ViewId, replacement: Option<ViewId>) {
         let parent = self.nodes[child].parent;
 
@@ -343,6 +423,7 @@ impl Tree {
     }
 
     pub fn remove(&mut self, index: ViewId) {
+        self.unzoom();
         if self.focus == index {
             // focus on something else
             self.focus = self.prev();
