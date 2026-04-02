@@ -554,6 +554,12 @@ impl MappableCommand {
         vsplit_new, "Vertical right split scratch buffer",
         wclose, "Close window",
         wonly, "Close windows except current",
+        grow_width, "Grow split width",
+        shrink_width, "Shrink split width",
+        grow_height, "Grow split height",
+        shrink_height, "Shrink split height",
+        equalize_splits, "Equalize split sizes",
+        toggle_zoom, "Toggle zoom on focused split",
         select_register, "Select register",
         insert_register, "Insert register",
         copy_between_registers, "Copy between two registers",
@@ -6000,6 +6006,34 @@ fn wonly(cx: &mut Context) {
             cx.editor.close(view_id);
         }
     }
+}
+
+fn grow_width(cx: &mut Context) {
+    let count = cx.count() as f64 * 0.2;
+    cx.editor.tree.resize_view(tree::Direction::Right, count);
+}
+
+fn shrink_width(cx: &mut Context) {
+    let count = cx.count() as f64 * 0.2;
+    cx.editor.tree.resize_view(tree::Direction::Left, count);
+}
+
+fn grow_height(cx: &mut Context) {
+    let count = cx.count() as f64 * 0.2;
+    cx.editor.tree.resize_view(tree::Direction::Down, count);
+}
+
+fn shrink_height(cx: &mut Context) {
+    let count = cx.count() as f64 * 0.2;
+    cx.editor.tree.resize_view(tree::Direction::Up, count);
+}
+
+fn equalize_splits(cx: &mut Context) {
+    cx.editor.tree.equalize_splits();
+}
+
+fn toggle_zoom(cx: &mut Context) {
+    cx.editor.tree.toggle_zoom();
 }
 
 fn select_register(cx: &mut Context) {

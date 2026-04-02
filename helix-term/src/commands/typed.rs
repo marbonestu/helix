@@ -3043,6 +3043,30 @@ fn tree_reveal(
     Ok(())
 }
 
+fn cmd_equalize_splits(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    cx.editor.tree.equalize_splits();
+    Ok(())
+}
+
+fn cmd_toggle_zoom(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    cx.editor.tree.toggle_zoom();
+    Ok(())
+}
+
 /// This command accepts a single boolean --skip-visible flag and no positionals.
 const BUFFER_CLOSE_OTHERS_SIGNATURE: Signature = Signature {
     positionals: (0, Some(0)),
@@ -4236,6 +4260,28 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Reveal current file in file tree.",
         fun: tree_reveal,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "equalize-splits",
+        aliases: &["equal"],
+        doc: "Reset all splits to equal sizes.",
+        fun: cmd_equalize_splits,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "toggle-zoom",
+        aliases: &["zoom"],
+        doc: "Toggle zoom on the focused split.",
+        fun: cmd_toggle_zoom,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
