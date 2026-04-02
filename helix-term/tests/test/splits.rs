@@ -1,6 +1,7 @@
 use super::*;
 
 use helix_stdx::path;
+use std::cell::Cell;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_split_write_quit_all() -> anyhow::Result<()> {
@@ -212,5 +213,336 @@ async fn test_changes_in_splits_jumplist_sync() -> anyhow::Result<()> {
     ))
     .await?;
 
+    Ok(())
+}
+
+// ── Resize keybindings ────────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_split_grow_width() -> anyhow::Result<()> {
+    let mut app = helpers::AppBuilder::new().build()?;
+    // <C-w>v creates right split (focused). <C-w>h focuses left. <C-w><gt> grows left.
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("<C-w>v<C-w>h<C-w><gt>"),
+                Some(&|app| {
+                    let views: Vec<_> = app.editor.tree.views().collect();
+                    assert_eq!(2, views.len());
+                    let focused_width = views.iter().find(|(_, f)| *f).unwrap().0.area.width;
+                    let other_width = views.iter().find(|(_, f)| !f).unwrap().0.area.width;
+                    assert!(
+                        focused_width > other_width,
+                        "focused ({focused_width}) should be wider than other ({other_width})"
+                    );
+                }),
+            ),
+            (Some("<C-w>q"), None),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_split_shrink_width() -> anyhow::Result<()> {
+    let mut app = helpers::AppBuilder::new().build()?;
+    // <C-w>v creates right split focused at pos=1 (has left sibling). <C-w><lt> shrinks it.
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("<C-w>v<C-w><lt>"),
+                Some(&|app| {
+                    let views: Vec<_> = app.editor.tree.views().collect();
+                    assert_eq!(2, views.len());
+                    let focused_width = views.iter().find(|(_, f)| *f).unwrap().0.area.width;
+                    let other_width = views.iter().find(|(_, f)| !f).unwrap().0.area.width;
+                    assert!(
+                        focused_width < other_width,
+                        "focused ({focused_width}) should be narrower after shrink"
+                    );
+                }),
+            ),
+            (Some("<C-w>q"), None),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_split_resize_count() -> anyhow::Result<()> {
+    // A count of 3 should produce a larger width change than a count of 1.
+    let single_step_diff: Cell<i32> = Cell::new(0);
+    let three_step_diff: Cell<i32> = Cell::new(0);
+
+    let mut app = helpers::AppBuilder::new().build()?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("<C-w>v<C-w>h<C-w><gt>"),
+                Some(&|app| {
+                    let views: Vec<_> = app.editor.tree.views().collect();
+                    let fw = views.iter().find(|(_, f)| *f).unwrap().0.area.width as i32;
+                    let ow = views.iter().find(|(_, f)| !f).unwrap().0.area.width as i32;
+                    single_step_diff.set(fw - ow);
+                }),
+            ),
+            (Some("<C-w>q"), None),
+        ],
+        false,
+    )
+    .await?;
+
+    let mut app = helpers::AppBuilder::new().build()?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("<C-w>v<C-w>h3<C-w><gt>"),
+                Some(&|app| {
+                    let views: Vec<_> = app.editor.tree.views().collect();
+                    let fw = views.iter().find(|(_, f)| *f).unwrap().0.area.width as i32;
+                    let ow = views.iter().find(|(_, f)| !f).unwrap().0.area.width as i32;
+                    three_step_diff.set(fw - ow);
+                }),
+            ),
+            (Some("<C-w>q"), None),
+        ],
+        false,
+    )
+    .await?;
+
+    let s = single_step_diff.get();
+    let t = three_step_diff.get();
+    assert!(t > s, "3-step resize ({t}) should give larger diff than 1-step ({s})");
+    Ok(())
+}
+
+// ── Equalize ──────────────────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_equalize_splits_keybinding() -> anyhow::Result<()> {
+    let mut app = helpers::AppBuilder::new().build()?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("<C-w>v<C-w>h<C-w><gt><C-w><gt><C-w>="),
+                Some(&|app| {
+                    let views: Vec<_> = app.editor.tree.views().collect();
+                    assert_eq!(2, views.len());
+                    let w0 = views[0].0.area.width;
+                    let w1 = views[1].0.area.width;
+                    let diff = w0.abs_diff(w1);
+                    assert!(diff <= 1, "widths should be equal after equalize (±1): {w0} vs {w1}");
+                }),
+            ),
+            (Some("<C-w>q"), None),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_equalize_splits_typed_command() -> anyhow::Result<()> {
+    let mut app = helpers::AppBuilder::new().build()?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("<C-w>v<C-w>h<C-w><gt><C-w><gt>:equalize-splits<ret>"),
+                Some(&|app| {
+                    let views: Vec<_> = app.editor.tree.views().collect();
+                    assert_eq!(2, views.len());
+                    let diff = views[0].0.area.width.abs_diff(views[1].0.area.width);
+                    assert!(diff <= 1, "widths should be equal after :equalize-splits");
+                }),
+            ),
+            (Some("<C-w>q"), None),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_equalize_splits_alias() -> anyhow::Result<()> {
+    let mut app = helpers::AppBuilder::new().build()?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("<C-w>v<C-w>h<C-w><gt><C-w><gt>:equal<ret>"),
+                Some(&|app| {
+                    let views: Vec<_> = app.editor.tree.views().collect();
+                    assert_eq!(2, views.len());
+                    let diff = views[0].0.area.width.abs_diff(views[1].0.area.width);
+                    assert!(diff <= 1, "widths should be equal after :equal alias");
+                }),
+            ),
+            (Some("<C-w>q"), None),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+// ── Zoom ──────────────────────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_zoom_toggle_keybinding() -> anyhow::Result<()> {
+    let mut app = helpers::AppBuilder::new().build()?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("<C-w>v<C-w>h<C-w>z"),
+                Some(&|app| {
+                    assert!(app.editor.tree.is_zoomed());
+                    let views: Vec<_> = app.editor.tree.views().collect();
+                    assert_eq!(2, views.len(), "both views still exist while zoomed");
+                    let focused_w = views.iter().find(|(_, f)| *f).unwrap().0.area.width;
+                    let other_w = views.iter().find(|(_, f)| !f).unwrap().0.area.width;
+                    assert!(
+                        focused_w > other_w * 3,
+                        "zoomed view ({focused_w}) should dominate other ({other_w})"
+                    );
+                }),
+            ),
+            (
+                Some("<C-w>z"),
+                Some(&|app| {
+                    assert!(!app.editor.tree.is_zoomed());
+                    let views: Vec<_> = app.editor.tree.views().collect();
+                    let diff = views[0].0.area.width.abs_diff(views[1].0.area.width);
+                    assert!(diff <= 1, "widths should be equal after unzoom");
+                }),
+            ),
+            (Some("<C-w>q"), None),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_zoom_toggle_typed_command() -> anyhow::Result<()> {
+    let mut app = helpers::AppBuilder::new().build()?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("<C-w>v<C-w>h:toggle-zoom<ret>"),
+                Some(&|app| {
+                    assert!(app.editor.tree.is_zoomed());
+                }),
+            ),
+            (
+                Some(":zoom<ret>"),
+                Some(&|app| {
+                    assert!(!app.editor.tree.is_zoomed());
+                }),
+            ),
+            (Some("<C-w>q"), None),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_zoom_then_close_split() -> anyhow::Result<()> {
+    let mut app = helpers::AppBuilder::new().build()?;
+    test_key_sequence(
+        &mut app,
+        Some("<C-w>v<C-w>h<C-w>z<C-w>q"),
+        Some(&|app| {
+            assert!(!app.editor.tree.is_zoomed(), "zoom should clear after closing a split");
+            assert_eq!(1, app.editor.tree.views().count());
+        }),
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_zoom_then_split() -> anyhow::Result<()> {
+    let mut app = helpers::AppBuilder::new().build()?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("<C-w>v<C-w>h<C-w>z<C-w>v"),
+                Some(&|app| {
+                    assert!(!app.editor.tree.is_zoomed(), "zoom should clear after splitting");
+                    assert_eq!(3, app.editor.tree.views().count());
+                }),
+            ),
+            (Some("<C-w>q<C-w>q"), None),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+// ── Resize + zoom interaction ─────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_resize_then_zoom_then_unzoom_restores() -> anyhow::Result<()> {
+    let saved_w0: Cell<u16> = Cell::new(0);
+    let saved_w1: Cell<u16> = Cell::new(0);
+
+    let mut app = helpers::AppBuilder::new().build()?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("<C-w>v<C-w>h<C-w><gt><C-w><gt><C-w><gt>"),
+                Some(&|app| {
+                    let views: Vec<_> = app.editor.tree.views().collect();
+                    saved_w0.set(views[0].0.area.width);
+                    saved_w1.set(views[1].0.area.width);
+                }),
+            ),
+            (
+                Some("<C-w>z"),
+                Some(&|app| {
+                    assert!(app.editor.tree.is_zoomed());
+                }),
+            ),
+            (
+                Some("<C-w>z"),
+                Some(&|app| {
+                    assert!(!app.editor.tree.is_zoomed());
+                    let views: Vec<_> = app.editor.tree.views().collect();
+                    let w0 = views[0].0.area.width;
+                    let w1 = views[1].0.area.width;
+                    assert!(
+                        w0.abs_diff(saved_w0.get()) <= 1 && w1.abs_diff(saved_w1.get()) <= 1,
+                        "pre-zoom widths ({}, {}) should be restored (got {w0}, {w1})",
+                        saved_w0.get(),
+                        saved_w1.get()
+                    );
+                }),
+            ),
+            (Some("<C-w>q"), None),
+        ],
+        false,
+    )
+    .await?;
     Ok(())
 }

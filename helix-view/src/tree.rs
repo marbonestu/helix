@@ -298,13 +298,15 @@ impl Tree {
                 };
 
                 let container = self.container_mut(parent_id);
-                let max_transfer = container.weights[sibling_pos] - 0.1;
+                // For grow: take weight from sibling; for shrink: take weight from self.
+                let (donor, recipient) = if grows { (sibling_pos, pos) } else { (pos, sibling_pos) };
+                let max_transfer = container.weights[donor] - 0.1;
                 let transfer = amount.min(max_transfer);
                 if transfer <= 0.0 {
                     return;
                 }
-                container.weights[pos] += transfer;
-                container.weights[sibling_pos] -= transfer;
+                container.weights[donor] -= transfer;
+                container.weights[recipient] += transfer;
 
                 self.recalculate();
                 return;
