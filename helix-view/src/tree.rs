@@ -1167,4 +1167,457 @@ mod test {
                 .collect::<Vec<_>>()
         );
     }
+
+    fn make_tree(width: u16, height: u16) -> Tree {
+        let mut tree = Tree::new(Rect::new(0, 0, width, height));
+        let mut view = View::new(DocumentId::default(), GutterConfig::default());
+        view.area = Rect::new(0, 0, width, height);
+        tree.insert(view);
+        tree
+    }
+
+    fn add_vsplit(tree: &mut Tree) -> ViewId {
+        let view = View::new(DocumentId::default(), GutterConfig::default());
+        tree.split(view, Layout::Vertical);
+        tree.focus
+    }
+
+    fn add_hsplit(tree: &mut Tree) -> ViewId {
+        let view = View::new(DocumentId::default(), GutterConfig::default());
+        tree.split(view, Layout::Horizontal);
+        tree.focus
+    }
+
+    fn container_weights(tree: &Tree, node_id: ViewId) -> Vec<f64> {
+        match &tree.nodes[node_id].content {
+            Content::Container(c) => c.weights.clone(),
+            _ => panic!("not a container"),
+        }
+    }
+
+    fn root_container_weights(tree: &Tree) -> Vec<f64> {
+        container_weights(tree, tree.root)
+    }
+
+    // ── Weight invariants ─────────────────────────────────────────────────────
+
+    #[test]
+    fn weights_initialized_to_equal() {
+        let mut tree = make_tree(180, 80);
+        add_vsplit(&mut tree);
+        add_vsplit(&mut tree);
+        let weights = root_container_weights(&tree);
+        assert_eq!(weights.len(), 3);
+        assert!(weights.iter().all(|&w| (w - 1.0).abs() < f64::EPSILON));
+    }
+
+    #[test]
+    fn weights_sync_on_remove() {
+        let mut tree = make_tree(180, 80);
+        let _a = tree.focus;
+        let b = add_vsplit(&mut tree);
+        let _c = add_vsplit(&mut tree);
+        assert_eq!(root_container_weights(&tree).len(), 3);
+
+        tree.remove(b);
+        let weights = root_container_weights(&tree);
+        assert_eq!(weights.len(), 2);
+    }
+
+    #[test]
+    fn weights_swap_same_parent() {
+        let mut tree = make_tree(180, 80);
+        let a = tree.focus;
+        add_vsplit(&mut tree);
+        let b = tree.focus;
+
+        // Give a bigger weight to 'a'
+        let root = tree.root;
+        if let Content::Container(c) = &mut tree.nodes[root].content {
+            c.weights[0] = 2.0;
+            c.weights[1] = 1.0;
+        }
+
+        tree.focus = a;
+        tree.swap_split_in_direction(Direction::Right);
+
+        // After swap, 'a' is at position 1, 'b' is at position 0.
+        // Weights should have swapped too.
+        let weights = root_container_weights(&tree);
+        assert!((weights[0] - 1.0).abs() < f64::EPSILON);
+        assert!((weights[1] - 2.0).abs() < f64::EPSILON);
+    }
+
+    // ── Proportional layout ───────────────────────────────────────────────────
+
+    #[test]
+    fn equal_weights_match_equal_distribution() {
+        // Backwards-compatibility: equal weights must produce equal-ish widths.
+        let mut tree = make_tree(180, 80);
+        add_vsplit(&mut tree);
+        add_vsplit(&mut tree);
+        let widths: Vec<_> = tree.views().map(|(v, _)| v.area.width).collect();
+        assert_eq!(widths.len(), 3);
+        let max = *widths.iter().max().unwrap();
+        let min = *widths.iter().min().unwrap();
+        assert!(max - min <= 1, "widths should be equal (±1 rounding): {widths:?}");
+    }
+
+    #[test]
+    fn weighted_vertical_distribution() {
+        // 2:1 weights → first view gets ~2/3 of usable width.
+        let mut tree = make_tree(181, 80);
+        let a = tree.focus;
+        add_vsplit(&mut tree);
+
+        let root = tree.root;
+        if let Content::Container(c) = &mut tree.nodes[root].content {
+            c.weights[0] = 2.0;
+            c.weights[1] = 1.0;
+        }
+        tree.recalculate();
+
+        tree.focus = a;
+        let views: Vec<_> = tree.views().collect();
+        let (focused, _) = views.iter().find(|(_, f)| *f).unwrap();
+        let (other, _) = views.iter().find(|(_, f)| !f).unwrap();
+        assert!(
+            focused.area.width > other.area.width,
+            "focused ({}) should be wider than other ({})",
+            focused.area.width,
+            other.area.width
+        );
+    }
+
+    #[test]
+    fn weighted_horizontal_distribution() {
+        // 1:2 weights → second view gets ~2/3 of height.
+        // add_hsplit from root (Vertical) creates a Horizontal sub-container.
+        let mut tree = make_tree(180, 90);
+        let a = tree.focus;
+        add_hsplit(&mut tree);
+
+        // The horizontal container is a's parent (not root).
+        let hcontainer = tree.nodes[a].parent;
+        if let Content::Container(c) = &mut tree.nodes[hcontainer].content {
+            c.weights[0] = 1.0;
+            c.weights[1] = 2.0;
+        }
+        tree.recalculate();
+
+        tree.focus = a;
+        let views: Vec<_> = tree.views().collect();
+        let (focused, _) = views.iter().find(|(_, f)| *f).unwrap();
+        let (other, _) = views.iter().find(|(_, f)| !f).unwrap();
+        assert!(
+            other.area.height > focused.area.height,
+            "second view ({}) should be taller than first ({})",
+            other.area.height,
+            focused.area.height
+        );
+    }
+
+    #[test]
+    fn last_child_absorbs_rounding() {
+        let mut tree = make_tree(100, 80);
+        add_vsplit(&mut tree);
+        add_vsplit(&mut tree);
+
+        let total_width: u16 = tree.views().map(|(v, _)| v.area.width).sum();
+        let gap_total = 2u16; // 3 children → 2 gaps of 1px each
+        assert_eq!(
+            total_width + gap_total,
+            100,
+            "widths + gaps should exactly fill container"
+        );
+    }
+
+    #[test]
+    fn vertical_gap_count_fix() {
+        // n children have n-1 separators. Total of widths + gaps must equal container width.
+        let mut tree = make_tree(100, 80);
+        add_vsplit(&mut tree);
+        add_vsplit(&mut tree);
+
+        let n = tree.views().count() as u16;
+        let total_width: u16 = tree.views().map(|(v, _)| v.area.width).sum();
+        assert_eq!(
+            total_width + (n - 1),
+            100,
+            "expected {total_width} + {} gaps = 100",
+            n - 1
+        );
+    }
+
+    // ── Resize API ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn resize_view_grows_right() {
+        let mut tree = make_tree(180, 80);
+        let a = tree.focus;
+        add_vsplit(&mut tree);
+
+        tree.focus = a;
+        let width_before = tree.get(a).area.width;
+        tree.resize_view(Direction::Right, 0.4);
+        let width_after = tree.get(a).area.width;
+
+        assert!(
+            width_after > width_before,
+            "view should be wider after grow_right: {width_before} → {width_after}"
+        );
+    }
+
+    #[test]
+    fn resize_view_no_op_at_edge() {
+        let mut tree = make_tree(180, 80);
+        let a = tree.focus;
+        let b = add_vsplit(&mut tree);
+
+        // b is the rightmost — growing right should be a no-op
+        tree.focus = b;
+        let weights_before = root_container_weights(&tree);
+        tree.resize_view(Direction::Right, 0.4);
+        assert_eq!(root_container_weights(&tree), weights_before);
+
+        // a is the leftmost — growing left should be a no-op
+        tree.focus = a;
+        let weights_before = root_container_weights(&tree);
+        tree.resize_view(Direction::Left, 0.4);
+        assert_eq!(root_container_weights(&tree), weights_before);
+    }
+
+    #[test]
+    fn resize_view_no_op_single_view() {
+        let mut tree = make_tree(180, 80);
+        let width_before = tree.get(tree.focus).area.width;
+        tree.resize_view(Direction::Right, 0.4);
+        let width_after = tree.get(tree.focus).area.width;
+        assert_eq!(width_before, width_after);
+    }
+
+    #[test]
+    fn resize_view_respects_min_weight() {
+        let mut tree = make_tree(180, 80);
+        let a = tree.focus;
+        add_vsplit(&mut tree);
+
+        // Set sibling weight just above the minimum
+        let root = tree.root;
+        if let Content::Container(c) = &mut tree.nodes[root].content {
+            c.weights[0] = 1.0;
+            c.weights[1] = 0.2;
+        }
+
+        tree.focus = a;
+        tree.resize_view(Direction::Right, 5.0); // tries to take more than available
+
+        let weights = root_container_weights(&tree);
+        assert!(
+            weights[1] >= 0.1,
+            "sibling weight should not go below 0.1, got {}",
+            weights[1]
+        );
+    }
+
+    #[test]
+    fn resize_view_walks_up_tree() {
+        // Layout: root→[hcontainer→[vcontainer→[a, b], bottom]]
+        // Focusing 'a' and growing height should walk past vcontainer to hcontainer.
+        let mut tree = make_tree(180, 80);
+        let a = tree.focus;
+        let _bottom = add_hsplit(&mut tree); // a's parent becomes hcontainer
+
+        tree.focus = a;
+        let _b = add_vsplit(&mut tree); // a's parent becomes vcontainer; vcontainer in hcontainer
+
+        // hcontainer is vcontainer's parent
+        let vcontainer = tree.nodes[a].parent;
+        let hcontainer = tree.nodes[vcontainer].parent;
+        let hweights_before = container_weights(&tree, hcontainer);
+
+        tree.focus = a;
+        tree.resize_view(Direction::Down, 0.4);
+
+        let hweights_after = container_weights(&tree, hcontainer);
+        assert_ne!(
+            hweights_before, hweights_after,
+            "horizontal container weights should have changed"
+        );
+    }
+
+    // ── Equalize ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn equalize_splits_resets_weights() {
+        let mut tree = make_tree(180, 80);
+        add_vsplit(&mut tree);
+        add_vsplit(&mut tree);
+
+        let root = tree.root;
+        if let Content::Container(c) = &mut tree.nodes[root].content {
+            c.weights = vec![3.0, 0.5, 1.5];
+        }
+
+        tree.equalize_splits();
+        let weights = root_container_weights(&tree);
+        assert!(
+            weights.iter().all(|&w| (w - 1.0).abs() < f64::EPSILON),
+            "all weights should be 1.0 after equalize: {weights:?}"
+        );
+    }
+
+    #[test]
+    fn equalize_splits_recursive() {
+        let mut tree = make_tree(180, 80);
+        let a = tree.focus;
+        add_vsplit(&mut tree); // root now has [a, b] vertical
+
+        tree.focus = a;
+        add_hsplit(&mut tree); // a splits horizontally: root→[sub, b], sub→[a, new]
+
+        // bias the weights
+        let root = tree.root;
+        if let Content::Container(c) = &mut tree.nodes[root].content {
+            c.weights = vec![3.0, 1.0];
+        }
+
+        tree.equalize_splits();
+
+        // All containers at all levels should have uniform weights
+        for (_, node) in tree.nodes.iter() {
+            if let Content::Container(c) = &node.content {
+                for &w in &c.weights {
+                    assert!((w - 1.0).abs() < f64::EPSILON, "weight should be 1.0: {w}");
+                }
+            }
+        }
+    }
+
+    // ── Zoom ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn zoom_inflates_focused_view() {
+        let mut tree = make_tree(180, 80);
+        let a = tree.focus;
+        add_vsplit(&mut tree);
+        add_vsplit(&mut tree);
+
+        tree.focus = a;
+        tree.toggle_zoom();
+
+        assert!(tree.is_zoomed());
+        let views: Vec<_> = tree.views().collect();
+        let focused_area = views.iter().find(|(_, f)| *f).unwrap().0.area;
+        let others_max = views
+            .iter()
+            .filter(|(_, f)| !f)
+            .map(|(v, _)| v.area.width)
+            .max()
+            .unwrap();
+        assert!(
+            focused_area.width > others_max * 3,
+            "zoomed view ({}) should dominate siblings (max {})",
+            focused_area.width,
+            others_max
+        );
+    }
+
+    #[test]
+    fn unzoom_restores_exact_weights() {
+        let mut tree = make_tree(180, 80);
+        let a = tree.focus;
+        add_vsplit(&mut tree);
+        add_vsplit(&mut tree);
+
+        let root = tree.root;
+        if let Content::Container(c) = &mut tree.nodes[root].content {
+            c.weights = vec![2.0, 1.0, 3.0];
+        }
+        tree.recalculate();
+
+        tree.focus = a;
+        tree.toggle_zoom();
+        tree.toggle_zoom(); // unzoom
+
+        assert!(!tree.is_zoomed());
+        let weights = root_container_weights(&tree);
+        assert!((weights[0] - 2.0).abs() < f64::EPSILON);
+        assert!((weights[1] - 1.0).abs() < f64::EPSILON);
+        assert!((weights[2] - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn zoom_then_remove_unzooms_first() {
+        let mut tree = make_tree(180, 80);
+        let a = tree.focus;
+        let b = add_vsplit(&mut tree);
+
+        tree.focus = a;
+        tree.toggle_zoom();
+        assert!(tree.is_zoomed());
+
+        tree.remove(b);
+        assert!(!tree.is_zoomed(), "zoom should be cleared after removing a view");
+        assert_eq!(1, tree.views().count());
+    }
+
+    #[test]
+    fn zoom_then_split_unzooms_first() {
+        let mut tree = make_tree(180, 80);
+        let a = tree.focus;
+        add_vsplit(&mut tree);
+
+        tree.focus = a;
+        tree.toggle_zoom();
+        assert!(tree.is_zoomed());
+
+        add_vsplit(&mut tree);
+        assert!(!tree.is_zoomed(), "zoom should be cleared after splitting");
+        assert_eq!(3, tree.views().count());
+    }
+
+    #[test]
+    fn zoom_preserves_tree_traversal() {
+        let mut tree = make_tree(180, 80);
+        let a = tree.focus;
+        add_vsplit(&mut tree);
+        add_vsplit(&mut tree);
+
+        tree.focus = a;
+        tree.toggle_zoom();
+
+        assert_eq!(3, tree.views().count(), "all 3 views should still be present while zoomed");
+    }
+
+    // ── Terminal resize ───────────────────────────────────────────────────────
+
+    #[test]
+    fn terminal_resize_preserves_proportions() {
+        let mut tree = make_tree(180, 80);
+        let a = tree.focus;
+        add_vsplit(&mut tree);
+
+        let root = tree.root;
+        if let Content::Container(c) = &mut tree.nodes[root].content {
+            c.weights = vec![2.0, 1.0];
+        }
+        tree.recalculate();
+
+        let width_a_before = tree.get(a).area.width;
+        let total_before = 180u16;
+
+        tree.resize(Rect::new(0, 0, 120, 60));
+
+        let width_a_after = tree.get(a).area.width;
+        let total_after = 120u16;
+
+        // ratio should be preserved: width_a / total ≈ 2/3
+        let ratio_before = width_a_before as f64 / total_before as f64;
+        let ratio_after = width_a_after as f64 / total_after as f64;
+        assert!(
+            (ratio_before - ratio_after).abs() < 0.05,
+            "proportion should be preserved: {ratio_before:.3} vs {ratio_after:.3}"
+        );
+    }
 }
