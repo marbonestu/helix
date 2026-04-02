@@ -1842,7 +1842,7 @@ impl EditorView {
                 cx.editor.file_tree_focused = false;
                 EventResult::Ignored(None)
             }
-            _ => EventResult::Ignored(None),
+            _ => EventResult::Consumed(None),
         }
     }
 
