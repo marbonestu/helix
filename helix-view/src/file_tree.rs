@@ -138,6 +138,11 @@ pub struct FileTree {
     follow_deadline: Option<Instant>,
     /// Path to reveal after an async directory load completes.
     pending_reveal: Option<PathBuf>,
+    /// Incremental search state.
+    search_query: String,
+    search_active: bool,
+    /// Selection to restore if search is cancelled with Esc.
+    pre_search_selected: usize,
 }
 
 impl std::fmt::Debug for FileTree {
@@ -193,6 +198,9 @@ impl FileTree {
             follow_target: None,
             follow_deadline: None,
             pending_reveal: None,
+            search_query: String::new(),
+            search_active: false,
+            pre_search_selected: 0,
         };
 
         // Load root children synchronously so the tree is populated on
@@ -229,6 +237,9 @@ impl FileTree {
             follow_target: None,
             follow_deadline: None,
             pending_reveal: None,
+            search_query: String::new(),
+            search_active: false,
+            pre_search_selected: 0,
         }
     }
 
@@ -630,12 +641,124 @@ impl FileTree {
         self.ensure_selected_visible();
     }
 
+    pub fn page_up(&mut self, count: usize) {
+        self.selected = self.selected.saturating_sub(count);
+        self.ensure_selected_visible();
+    }
+
+    pub fn page_down(&mut self, count: usize) {
+        self.selected =
+            (self.selected + count).min(self.visible.len().saturating_sub(1));
+        self.ensure_selected_visible();
+    }
+
+    /// Scroll viewport up by one line without moving selection.
+    pub fn scroll_view_up(&mut self) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+    }
+
+    /// Scroll viewport down by one line without moving selection.
+    pub fn scroll_view_down(&mut self) {
+        let max = self.visible.len().saturating_sub(1);
+        if self.scroll_offset < max {
+            self.scroll_offset += 1;
+        }
+    }
+
     fn ensure_selected_visible(&mut self) {
         if self.selected < self.scroll_offset {
             self.scroll_offset = self.selected;
         }
         // Upper bound clamping happens in the render function where
         // viewport height is known.
+    }
+
+    // --- Search ---
+
+    pub fn search_active(&self) -> bool {
+        self.search_active
+    }
+
+    pub fn search_query(&self) -> &str {
+        &self.search_query
+    }
+
+    pub fn search_start(&mut self) {
+        self.search_active = true;
+        self.search_query.clear();
+        self.pre_search_selected = self.selected;
+    }
+
+    pub fn search_push(&mut self, ch: char) {
+        self.search_query.push(ch);
+        self.search_jump_next_from(self.pre_search_selected);
+    }
+
+    pub fn search_pop(&mut self) {
+        self.search_query.pop();
+        if self.search_query.is_empty() {
+            self.selected = self.pre_search_selected;
+            self.ensure_selected_visible();
+        } else {
+            self.search_jump_next_from(self.pre_search_selected);
+        }
+    }
+
+    pub fn search_confirm(&mut self) {
+        self.search_active = false;
+    }
+
+    pub fn search_cancel(&mut self) {
+        self.search_active = false;
+        self.search_query.clear();
+        self.selected = self.pre_search_selected;
+        self.ensure_selected_visible();
+    }
+
+    /// Jump to the next match after `from`, wrapping around.
+    pub fn search_next(&mut self) {
+        if self.search_query.is_empty() {
+            return;
+        }
+        let start = (self.selected + 1) % self.visible.len().max(1);
+        self.search_jump_next_from(start);
+    }
+
+    /// Jump to the previous match before current selection, wrapping around.
+    pub fn search_prev(&mut self) {
+        if self.search_query.is_empty() || self.visible.is_empty() {
+            return;
+        }
+        let query = self.search_query.to_lowercase();
+        let len = self.visible.len();
+        for offset in 1..=len {
+            let idx = (self.selected + len - offset) % len;
+            if let Some(node) = self.visible.get(idx).and_then(|&id| self.nodes.get(id)) {
+                if node.name.to_lowercase().contains(&query) {
+                    self.selected = idx;
+                    self.ensure_selected_visible();
+                    return;
+                }
+            }
+        }
+    }
+
+    fn search_jump_next_from(&mut self, from: usize) {
+        if self.search_query.is_empty() || self.visible.is_empty() {
+            return;
+        }
+        let query = self.search_query.to_lowercase();
+        let len = self.visible.len();
+        for offset in 0..len {
+            let idx = (from + offset) % len;
+            if let Some(node) = self.visible.get(idx).and_then(|&id| self.nodes.get(id)) {
+                if node.name.to_lowercase().contains(&query) {
+                    self.selected = idx;
+                    self.ensure_selected_visible();
+                    return;
+                }
+            }
+        }
     }
 
     pub fn scroll_offset(&self) -> usize {

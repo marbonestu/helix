@@ -57,10 +57,18 @@ pub fn render_file_tree(
         .try_get("ui.sidebar.directory")
         .unwrap_or_else(|| theme.get("ui.text.directory"));
 
+    // Reserve bottom row for search prompt when active
+    let search_active = tree.search_active();
+    let tree_height = if search_active {
+        content_area.height.saturating_sub(1)
+    } else {
+        content_area.height
+    };
+
     let visible = tree.visible();
     let scroll = tree.scroll_offset();
     let selected = tree.selected();
-    let height = content_area.height as usize;
+    let height = tree_height as usize;
 
     for (i, &node_id) in visible.iter().skip(scroll).take(height).enumerate() {
         let Some(node) = tree.nodes().get(node_id) else {
@@ -151,5 +159,27 @@ pub fn render_file_tree(
                 surface.set_string(git_x, y, symbol, git_style);
             }
         }
+    }
+
+    // Render search prompt on the bottom row when active
+    if search_active {
+        let prompt_y = content_area.y + tree_height;
+        let prompt_style = theme
+            .try_get("ui.sidebar.search")
+            .unwrap_or_else(|| theme.get("ui.text"));
+
+        // Clear the prompt row
+        let row = Rect::new(content_area.x, prompt_y, content_area.width, 1);
+        surface.set_style(row, bg_style);
+
+        let query = tree.search_query();
+        let prompt_text = format!("/{}", query);
+        surface.set_stringn(
+            content_area.x,
+            prompt_y,
+            &prompt_text,
+            content_width,
+            prompt_style,
+        );
     }
 }

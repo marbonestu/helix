@@ -1494,6 +1494,55 @@ impl EditorView {
 
         let config = cx.editor.config().file_tree.clone();
 
+        // Handle search mode input first
+        let in_search = cx
+            .editor
+            .file_tree
+            .as_ref()
+            .map_or(false, |t| t.search_active());
+
+        if in_search {
+            match key.code {
+                KeyCode::Esc => {
+                    if let Some(ref mut tree) = cx.editor.file_tree {
+                        tree.search_cancel();
+                    }
+                    return EventResult::Consumed(None);
+                }
+                KeyCode::Enter => {
+                    if let Some(ref mut tree) = cx.editor.file_tree {
+                        tree.search_confirm();
+                    }
+                    return EventResult::Consumed(None);
+                }
+                KeyCode::Backspace => {
+                    if let Some(ref mut tree) = cx.editor.file_tree {
+                        tree.search_pop();
+                    }
+                    return EventResult::Consumed(None);
+                }
+                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if let Some(ref mut tree) = cx.editor.file_tree {
+                        tree.search_next();
+                    }
+                    return EventResult::Consumed(None);
+                }
+                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if let Some(ref mut tree) = cx.editor.file_tree {
+                        tree.search_prev();
+                    }
+                    return EventResult::Consumed(None);
+                }
+                KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if let Some(ref mut tree) = cx.editor.file_tree {
+                        tree.search_push(ch);
+                    }
+                    return EventResult::Consumed(None);
+                }
+                _ => return EventResult::Consumed(None),
+            }
+        }
+
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if let Some(ref mut tree) = cx.editor.file_tree {
@@ -1575,6 +1624,64 @@ impl EditorView {
             KeyCode::Char('G') => {
                 if let Some(ref mut tree) = cx.editor.file_tree {
                     tree.jump_to_bottom();
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('/') => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.search_start();
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('n') => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.search_next();
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('N') => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.search_prev();
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    let half = (cx.editor.tree.area().height as usize) / 2;
+                    tree.page_up(half.max(1));
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    let half = (cx.editor.tree.area().height as usize) / 2;
+                    tree.page_down(half.max(1));
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    let page = cx.editor.tree.area().height as usize;
+                    tree.page_up(page.max(1));
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    let page = cx.editor.tree.area().height as usize;
+                    tree.page_down(page.max(1));
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.scroll_view_up();
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.scroll_view_down();
                 }
                 EventResult::Consumed(None)
             }
