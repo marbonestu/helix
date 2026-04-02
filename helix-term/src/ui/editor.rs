@@ -1511,6 +1511,24 @@ impl EditorView {
                     return EventResult::Consumed(None);
                 }
                 KeyCode::Enter => {
+                    // Pre-validate: if the prompt would create a path that
+                    // already exists, show an error and keep the prompt open.
+                    let conflict = cx
+                        .editor
+                        .file_tree
+                        .as_ref()
+                        .and_then(|t| t.prompt_would_create_path())
+                        .filter(|p| p.exists());
+                    if let Some(conflict_path) = conflict {
+                        if let Some(ref mut tree) = cx.editor.file_tree {
+                            tree.set_status(format!(
+                                "Already exists: {}",
+                                conflict_path.display()
+                            ));
+                        }
+                        return EventResult::Consumed(None);
+                    }
+
                     let commit = cx
                         .editor
                         .file_tree

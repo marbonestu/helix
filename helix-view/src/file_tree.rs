@@ -1081,6 +1081,31 @@ impl FileTree {
         self.pending_open.take()
     }
 
+    /// Returns the full destination path that the current prompt would create,
+    /// without committing the prompt. Used for pre-validation before confirming.
+    /// Returns `None` when the prompt mode doesn't create a path (search,
+    /// delete) or when the input is empty.
+    pub fn prompt_would_create_path(&self) -> Option<PathBuf> {
+        let name = self.prompt_input.trim();
+        if name.is_empty() {
+            return None;
+        }
+        match &self.prompt_mode {
+            PromptMode::NewFile { parent_dir } | PromptMode::NewDir { parent_dir } => {
+                Some(parent_dir.join(name))
+            }
+            PromptMode::Rename(id) => {
+                let parent = self.node_path(*id).parent()?.to_path_buf();
+                Some(parent.join(name))
+            }
+            PromptMode::Duplicate(id) => {
+                let parent = self.node_path(*id).parent()?.to_path_buf();
+                Some(parent.join(name))
+            }
+            _ => None,
+        }
+    }
+
     /// Returns the selected node's path if it is a directory, or the parent
     /// directory path if it is a file.
     pub fn selected_dir_path(&self) -> Option<PathBuf> {
