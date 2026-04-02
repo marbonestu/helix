@@ -377,6 +377,9 @@ pub struct Config {
     /// Search configuration.
     #[serde(default)]
     pub search: SearchConfig,
+    /// Flash jump configuration.
+    #[serde(default)]
+    pub flash: FlashConfig,
     pub lsp: LspConfig,
     pub terminal: Option<TerminalConfig>,
     /// Column numbers at which to draw the rulers. Defaults to `[]`, meaning no rulers.
@@ -582,6 +585,27 @@ impl Default for LspConfig {
             snippets: true,
             goto_reference_include_declaration: true,
             display_color_swatches: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct FlashConfig {
+    /// Number of search characters before showing labels (1 or 2).
+    pub search_chars: u8,
+    /// Dim non-matching text while flash is active.
+    pub dim_unmatched: bool,
+    /// Follow search.smart-case setting for case-insensitive matching.
+    pub smart_case: bool,
+}
+
+impl Default for FlashConfig {
+    fn default() -> Self {
+        Self {
+            search_chars: 2,
+            dim_unmatched: true,
+            smart_case: true,
         }
     }
 }
@@ -1125,6 +1149,7 @@ impl Default for Config {
             true_color: false,
             undercurl: false,
             search: SearchConfig::default(),
+            flash: FlashConfig::default(),
             lsp: LspConfig::default(),
             terminal: get_terminal_provider(),
             rulers: Vec::new(),

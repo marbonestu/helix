@@ -612,6 +612,9 @@ impl MappableCommand {
         command_palette, "Open command palette",
         goto_word, "Jump to a two-character label",
         extend_to_word, "Extend to a two-character label",
+        flash_jump, "Flash jump to a search match",
+        extend_flash_jump, "Extend selection to a flash jump match",
+        flash_search, "Flash jump using last search pattern",
         goto_next_tabstop, "Goto next snippet placeholder",
         goto_prev_tabstop, "Goto next snippet placeholder",
         rotate_selections_first, "Make the first selection your primary one",
@@ -2257,10 +2260,25 @@ fn search_completions(cx: &mut Context, reg: Option<char>) -> Vec<String> {
 }
 
 fn search(cx: &mut Context) {
-    searcher(cx, Direction::Forward)
+    let reg = cx.register.unwrap_or('/');
+    let movement = if cx.editor.mode() == Mode::Select {
+        Movement::Extend
+    } else {
+        Movement::Move
+    };
+
+    let (view, doc) = current_ref!(cx.editor);
+    let snapshot = doc.selection(view.id).clone();
+    let view_id = view.id;
+    let doc_id = doc.id();
+
+    let flash = crate::ui::flash::FlashPrompt::new(movement, view_id, doc_id, snapshot)
+        .with_search_register(reg);
+    cx.push_layer(Box::new(flash));
 }
 
 fn rsearch(cx: &mut Context) {
+    // Reverse search still uses the traditional regex prompt
     searcher(cx, Direction::Backward)
 }
 
@@ -7011,6 +7029,110 @@ fn jump_to_word(cx: &mut Context, behaviour: Movement) {
         }
     }
     jump_to_label(cx, words, behaviour)
+}
+
+fn flash_jump(cx: &mut Context) {
+    flash_jump_impl(cx, Movement::Move)
+}
+
+fn extend_flash_jump(cx: &mut Context) {
+    flash_jump_impl(cx, Movement::Extend)
+}
+
+fn flash_jump_impl(cx: &mut Context, behaviour: Movement) {
+    let config = cx.editor.config();
+    if config.jump_label_alphabet.is_empty() {
+        return;
+    }
+
+    let (view, doc) = current_ref!(cx.editor);
+    let snapshot = doc.selection(view.id).clone();
+    let view_id = view.id;
+    let doc_id = doc.id();
+
+    let flash = crate::ui::flash::FlashPrompt::new(behaviour, view_id, doc_id, snapshot);
+    cx.push_layer(Box::new(flash));
+}
+
+fn flash_search(cx: &mut Context) {
+    let reg = cx.register.unwrap_or('/');
+    let config = cx.editor.config();
+    let alphabet = &config.jump_label_alphabet;
+    if alphabet.is_empty() {
+        return;
+    }
+    let jump_label_limit = alphabet.len() * alphabet.len();
+
+    let Some(query) = cx.editor.registers.first(reg, cx.editor).map(|s| s.to_string()) else {
+        cx.editor.set_status("No search pattern");
+        return;
+    };
+
+    let case_insensitive = if config.search.smart_case {
+        !query.chars().any(char::is_uppercase)
+    } else {
+        false
+    };
+
+    let Ok(regex) = rope::RegexBuilder::new()
+        .syntax(
+            rope::Config::new()
+                .case_insensitive(case_insensitive)
+                .multi_line(true),
+        )
+        .build(&query)
+    else {
+        cx.editor.set_error(format!("Invalid regex: {}", query));
+        return;
+    };
+
+    let movement = if cx.editor.mode() == Mode::Select {
+        Movement::Extend
+    } else {
+        Movement::Move
+    };
+
+    let (view, doc) = current_ref!(cx.editor);
+    let text = doc.text().slice(..);
+
+    let start = text.line_to_char(text.char_to_line(doc.view_offset(view.id).anchor));
+    let end = text.line_to_char(
+        (view.estimate_last_doc_line(doc) + 1).min(text.len_lines()),
+    );
+
+    let mut matches: Vec<Range> = Vec::new();
+    for mat in regex.find_iter(text.regex_input_at(start..end)) {
+        let match_start = text.byte_to_char(mat.start());
+        let match_end = text.byte_to_char(mat.end());
+        if match_end == match_start {
+            continue;
+        }
+        matches.push(Range::new(match_start, match_end));
+        if matches.len() >= jump_label_limit {
+            break;
+        }
+    }
+
+    if matches.is_empty() {
+        cx.editor.set_status("No matches");
+        return;
+    }
+    if matches.len() == 1 {
+        let mut range = matches[0];
+        let (view, doc) = current_ref!(cx.editor);
+        let primary = doc.selection(view.id).primary();
+        range = if movement == Movement::Extend {
+            Range::new(primary.from().min(range.from()), range.head)
+        } else {
+            range.with_direction(Direction::Forward)
+        };
+        save_selection(cx);
+        let (view, doc) = current!(cx.editor);
+        doc.set_selection(view.id, range.into());
+        return;
+    }
+
+    jump_to_label(cx, matches, movement);
 }
 
 fn lsp_or_syntax_symbol_picker(cx: &mut Context) {
