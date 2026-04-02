@@ -1490,52 +1490,105 @@ impl EditorView {
         key: KeyEvent,
         cx: &mut commands::Context,
     ) -> EventResult {
-        use helix_view::file_tree::NodeKind;
+        use helix_view::file_tree::{NodeKind, PromptMode};
 
         let config = cx.editor.config().file_tree.clone();
 
-        // Handle search mode input first
-        let in_search = cx
+        // Check whether any prompt is active. When active, all keys are
+        // consumed by the prompt and do not reach the navigation bindings.
+        let prompt_active = cx
             .editor
             .file_tree
             .as_ref()
-            .map_or(false, |t| t.search_active());
+            .map_or(false, |t| !matches!(t.prompt_mode(), PromptMode::None));
 
-        if in_search {
+        if prompt_active {
             match key.code {
                 KeyCode::Esc => {
                     if let Some(ref mut tree) = cx.editor.file_tree {
-                        tree.search_cancel();
+                        tree.prompt_cancel();
                     }
                     return EventResult::Consumed(None);
                 }
                 KeyCode::Enter => {
-                    if let Some(ref mut tree) = cx.editor.file_tree {
-                        tree.search_confirm();
+                    // Pre-validate: if the prompt would create a path that
+                    // already exists, show an error and keep the prompt open.
+                    let conflict = cx
+                        .editor
+                        .file_tree
+                        .as_ref()
+                        .and_then(|t| t.prompt_would_create_path())
+                        .filter(|p| p.exists());
+                    if let Some(conflict_path) = conflict {
+                        if let Some(ref mut tree) = cx.editor.file_tree {
+                            tree.set_status(format!(
+                                "Already exists: {}",
+                                conflict_path.display()
+                            ));
+                        }
+                        return EventResult::Consumed(None);
+                    }
+
+                    let commit = cx
+                        .editor
+                        .file_tree
+                        .as_mut()
+                        .and_then(|t| t.prompt_confirm());
+                    if let Some(commit) = commit {
+                        Self::dispatch_prompt_commit(commit, cx);
                     }
                     return EventResult::Consumed(None);
                 }
                 KeyCode::Backspace => {
                     if let Some(ref mut tree) = cx.editor.file_tree {
-                        tree.search_pop();
+                        tree.prompt_pop();
                     }
                     return EventResult::Consumed(None);
                 }
                 KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     if let Some(ref mut tree) = cx.editor.file_tree {
-                        tree.search_next();
+                        if matches!(tree.prompt_mode(), PromptMode::Search) {
+                            tree.search_next();
+                        }
                     }
                     return EventResult::Consumed(None);
                 }
                 KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     if let Some(ref mut tree) = cx.editor.file_tree {
-                        tree.search_prev();
+                        if matches!(tree.prompt_mode(), PromptMode::Search) {
+                            tree.search_prev();
+                        }
                     }
                     return EventResult::Consumed(None);
                 }
                 KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if let Some(ref mut tree) = cx.editor.file_tree {
-                        tree.search_push(ch);
+                    // In DeleteConfirm mode only accept 'y' to confirm; anything
+                    // else cancels.
+                    let is_delete_confirm = cx
+                        .editor
+                        .file_tree
+                        .as_ref()
+                        .map_or(false, |t| matches!(t.prompt_mode(), PromptMode::DeleteConfirm { .. }));
+
+                    if is_delete_confirm {
+                        let commit = if ch == 'y' {
+                            cx.editor
+                                .file_tree
+                                .as_mut()
+                                .and_then(|t| t.prompt_confirm())
+                        } else {
+                            if let Some(ref mut tree) = cx.editor.file_tree {
+                                tree.prompt_cancel();
+                            }
+                            None
+                        };
+                        if let Some(commit) = commit {
+                            Self::dispatch_prompt_commit(commit, cx);
+                        }
+                    } else {
+                        if let Some(ref mut tree) = cx.editor.file_tree {
+                            tree.prompt_push(ch);
+                        }
                     }
                     return EventResult::Consumed(None);
                 }
@@ -1564,7 +1617,7 @@ impl EditorView {
                             if node.kind == NodeKind::Directory && node.expanded {
                                 tree.toggle_expand(id, &config);
                             } else if let Some(parent_id) = node.parent {
-                                // Move to parent
+                                // Move selection to parent directory
                                 if let Some(pos) =
                                     tree.visible().iter().position(|&vid| vid == parent_id)
                                 {
@@ -1647,7 +1700,8 @@ impl EditorView {
                 cx.editor.file_tree_focused = false;
                 EventResult::Consumed(None)
             }
-            KeyCode::Char('r') => {
+            // Phase 5: 'R' refreshes the tree (previously 'r')
+            KeyCode::Char('R') => {
                 if let Some(ref mut tree) = cx.editor.file_tree {
                     tree.refresh(&config);
                 }
@@ -1683,6 +1737,105 @@ impl EditorView {
                 }
                 EventResult::Consumed(None)
             }
+            // --- File management bindings ---
+            KeyCode::Char('a') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.start_new_file();
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('A') => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.start_new_dir();
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('r') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    if let Some(id) = tree.selected_id() {
+                        tree.start_rename(id);
+                    }
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('d') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    if let Some(id) = tree.selected_id() {
+                        tree.start_delete_confirm(id);
+                    }
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('y') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    if let Some(id) = tree.selected_id() {
+                        let path = tree.node_path(id);
+                        let display = path.file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string());
+                        tree.yank(id);
+                        tree.set_status(format!("Yanked: {display}"));
+                    }
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('x') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    if let Some(id) = tree.selected_id() {
+                        let path = tree.node_path(id);
+                        let display = path.file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string());
+                        tree.cut(id);
+                        tree.set_status(format!("Cut: {display}"));
+                    }
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('p') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                cx.callback.push(Box::new(|_compositor, cx| {
+                    use helix_view::file_tree_ops::{spawn_copy_file, spawn_move_path};
+                    use helix_view::file_tree::ClipboardOp;
+
+                    // Gather the data we need from the tree before borrowing editor.
+                    let (clip, dest_dir, tx) = {
+                        let Some(ref tree) = cx.editor.file_tree else { return };
+                        let Some(clip) = tree.clipboard().cloned() else { return };
+                        let Some(dest_dir) = tree.selected_dir_path() else { return };
+                        let tx = tree.update_tx();
+                        (clip, dest_dir, tx)
+                    };
+
+                    match clip.op {
+                        ClipboardOp::Copy => spawn_copy_file(tx, clip.path, dest_dir),
+                        ClipboardOp::Cut => {
+                            let new_path = dest_dir.join(clip.path.file_name().unwrap());
+                            if let Some(doc) = cx.editor.document_by_path(&clip.path) {
+                                let id = doc.id();
+                                cx.editor.set_doc_path(id, &new_path);
+                            }
+                            if let Some(ref mut tree) = cx.editor.file_tree {
+                                tree.clear_clipboard();
+                            }
+                            spawn_move_path(tx, clip.path, dest_dir);
+                        }
+                    }
+                }));
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('D') => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    if let Some(id) = tree.selected_id() {
+                        if tree.nodes().get(id).map(|n| n.kind) == Some(NodeKind::Directory) {
+                            tree.set_status("Duplicate is only available for files");
+                        } else {
+                            tree.start_duplicate(id);
+                        }
+                    }
+                }
+                EventResult::Consumed(None)
+            }
+            // --- Scroll bindings ---
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(ref mut tree) = cx.editor.file_tree {
                     let half = (cx.editor.tree.area().height as usize) / 2;
@@ -1727,7 +1880,101 @@ impl EditorView {
                 cx.editor.file_tree_focused = false;
                 EventResult::Ignored(None)
             }
-            _ => EventResult::Ignored(None),
+            _ => EventResult::Consumed(None),
+        }
+    }
+
+    /// Dispatch a confirmed prompt action to the appropriate async filesystem
+    /// operation or editor action.
+    fn dispatch_prompt_commit(
+        commit: helix_view::file_tree::PromptCommit,
+        cx: &mut commands::Context,
+    ) {
+        use helix_view::file_tree::PromptCommit;
+        use helix_view::file_tree_ops::{spawn_create_dir, spawn_create_file, spawn_delete};
+
+        match commit {
+            PromptCommit::Search | PromptCommit::DeleteCancelled => {
+                // Nothing to do
+            }
+            PromptCommit::NewFile { parent_dir, name } => {
+                if let Some(ref tree) = cx.editor.file_tree {
+                    let tx = tree.update_tx();
+                    spawn_create_file(tx, parent_dir, name);
+                }
+            }
+            PromptCommit::NewDir { parent_dir, name } => {
+                if let Some(ref tree) = cx.editor.file_tree {
+                    let tx = tree.update_tx();
+                    spawn_create_dir(tx, parent_dir, name);
+                }
+            }
+            PromptCommit::Rename { old_path, new_name } => {
+                let new_path = old_path
+                    .parent()
+                    .map(|p| p.join(&new_name))
+                    .unwrap_or_else(|| PathBuf::from(&new_name));
+                let config = cx.editor.config().file_tree.clone();
+                cx.callback.push(Box::new(move |_compositor, cx| {
+                    match cx.editor.move_path(&old_path, &new_path) {
+                        Ok(()) => {
+                            // Refresh the tree so the renamed node appears and reveal it.
+                            if let Some(ref mut tree) = cx.editor.file_tree {
+                                tree.refresh(&config);
+                                tree.reveal_path(&new_path, &config);
+                            }
+                        }
+                        Err(e) => {
+                            cx.editor.set_error(format!("Rename failed: {e}"));
+                        }
+                    }
+                }));
+            }
+            PromptCommit::Duplicate { src_path, new_name } => {
+                if let Some(ref tree) = cx.editor.file_tree {
+                    let tx = tree.update_tx();
+                    let dest_dir = src_path
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_default();
+                    let dest = dest_dir.join(&new_name);
+                    // Duplicate copies to the same directory with a user-supplied name.
+                    tokio::task::spawn_blocking(move || {
+                        use helix_view::file_tree::FileTreeUpdate;
+                        let result = std::fs::copy(&src_path, &dest).map(|_| ());
+                        let update = match result {
+                            Ok(()) => FileTreeUpdate::FsOpComplete {
+                                refresh_parent: dest_dir,
+                                select_path: Some(dest),
+                            },
+                            Err(e) => FileTreeUpdate::FsOpError {
+                                message: format!("Duplicate failed: {}", e),
+                            },
+                        };
+                        let _ = tx.blocking_send(update);
+                        helix_event::request_redraw();
+                    });
+                }
+            }
+            PromptCommit::DeleteConfirmed(path) => {
+                let is_dir = path.is_dir();
+                let tx = cx.editor.file_tree.as_ref().map(|t| t.update_tx());
+                Self::close_buffers_for_path(cx.editor, &path);
+                if let Some(tx) = tx {
+                    spawn_delete(tx, path, is_dir);
+                }
+            }
+        }
+    }
+
+    fn close_buffers_for_path(editor: &mut Editor, path: &std::path::Path) {
+        let ids: Vec<_> = editor
+            .documents()
+            .filter(|d| d.path().map_or(false, |p| p.starts_with(path)))
+            .map(|d| d.id())
+            .collect();
+        for id in ids {
+            let _ = editor.close_document(id, true);
         }
     }
 }
@@ -1985,6 +2232,16 @@ impl Component for EditorView {
 
         if let Some(ref mut tree) = cx.editor.file_tree {
             tree.process_updates(&config.file_tree, Some(&diff_providers));
+        }
+
+        // Open any file that was just created by a new-file operation.
+        let pending_open = cx.editor.file_tree.as_mut().and_then(|t| t.take_pending_open());
+        if let Some(path) = pending_open {
+            if let Err(e) = cx.editor.open(&path, helix_view::editor::Action::Replace) {
+                cx.editor.set_error(format!("{e}"));
+            } else {
+                cx.editor.file_tree_focused = false;
+            }
         }
 
         // if the terminal size suddenly changed, we need to trigger a resize

@@ -1,6 +1,6 @@
 use helix_view::editor::Editor;
-use helix_view::file_tree::{FileTree, FileTreeConfig, GitStatus, NodeKind};
-use helix_view::graphics::{Color, Rect, Style};
+use helix_view::file_tree::{ClipboardOp, FileTree, FileTreeConfig, GitStatus, NodeKind, PromptMode};
+use helix_view::graphics::{Color, Modifier, Rect, Style};
 use tui::buffer::Buffer as Surface;
 
 use super::file_icons;
@@ -76,9 +76,10 @@ pub fn render_file_tree(
         .or_else(|| theme.try_get("function"))
         .unwrap_or_else(|| theme.get("ui.text"));
 
-    // Reserve bottom row for search prompt when active
-    let search_active = tree.search_active();
-    let tree_height = if search_active {
+    // Reserve the bottom row when any prompt is active or a status message is pending.
+    let prompt_row_needed = !matches!(tree.prompt_mode(), PromptMode::None)
+        || tree.status_message().is_some();
+    let tree_height = if prompt_row_needed {
         content_area.height.saturating_sub(1)
     } else {
         content_area.height
@@ -192,22 +193,62 @@ pub fn render_file_tree(
 
         // Filename — colored by git status when dirty
         if name_width > 0 {
-            surface.set_stringn(name_x, y, &node.name, name_width, text_style);
+            let written = surface.set_stringn(name_x, y, &node.name, name_width, text_style);
+            let after_x = written.0;
+            let used = (after_x - name_x) as usize;
+            let remaining_after_name = name_width.saturating_sub(used);
+
+            // Clipboard tag: " (C)" for yanked, " (X)" for cut
+            if let Some(clip) = tree.clipboard() {
+                if tree.node_path(node_id) == clip.path && remaining_after_name >= 4 {
+                    let tag = match clip.op {
+                        ClipboardOp::Copy => " (C)",
+                        ClipboardOp::Cut => " (X)",
+                    };
+                    let tag_style = if is_selected {
+                        selected_style.add_modifier(Modifier::DIM)
+                    } else {
+                        text_style.add_modifier(Modifier::DIM)
+                    };
+                    surface.set_stringn(after_x, y, tag, remaining_after_name, tag_style);
+                }
+            }
         }
     }
 
-    // --- Search prompt at bottom row ----------------------------------------
-    if search_active {
+    // --- Bottom row: prompt or status message --------------------------------
+    if prompt_row_needed {
         let prompt_y = content_area.y + tree_height;
+        let row = Rect::new(content_area.x, prompt_y, content_area.width, 1);
+        surface.set_style(row, bg_style);
+
         let prompt_style = theme
             .try_get("ui.sidebar.search")
             .unwrap_or_else(|| theme.get("ui.text"));
 
-        let row = Rect::new(content_area.x, prompt_y, content_area.width, 1);
-        surface.set_style(row, bg_style);
+        let prompt_text = match tree.prompt_mode() {
+            PromptMode::Search => format!("/{}", tree.search_query()),
+            PromptMode::NewFile { .. } => format!("New file: {}", tree.prompt_input()),
+            PromptMode::NewDir { .. } => format!("New dir: {}", tree.prompt_input()),
+            PromptMode::Rename(_) => format!("Rename to: {}", tree.prompt_input()),
+            PromptMode::Duplicate(_) => format!("Duplicate as: {}", tree.prompt_input()),
+            PromptMode::DeleteConfirm { id, is_dir } => {
+                let name = tree.nodes().get(*id).map(|n| n.name.as_str()).unwrap_or("?");
+                if *is_dir {
+                    format!("Delete '{name}/' and all contents? [y/n]")
+                } else {
+                    format!("Delete '{name}'? [y/n]")
+                }
+            }
+            PromptMode::None => {
+                // Show status message in a dimmed style
+                let status = tree.status_message().unwrap_or("");
+                let status_style = prompt_style.add_modifier(Modifier::DIM);
+                surface.set_stringn(content_area.x, prompt_y, status, content_width, status_style);
+                return;
+            }
+        };
 
-        let query = tree.search_query();
-        let prompt_text = format!("/{}", query);
         surface.set_stringn(
             content_area.x,
             prompt_y,

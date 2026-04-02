@@ -7,6 +7,7 @@ pub mod document;
 pub mod editor;
 pub mod events;
 pub mod file_tree;
+pub mod file_tree_ops;
 pub mod expansion;
 pub mod graphics;
 pub mod gutter;
