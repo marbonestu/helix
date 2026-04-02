@@ -38,7 +38,7 @@ impl Default for FileTreeConfig {
         Self {
             auto_open: false,
             width: 30,
-            hidden: false,
+            hidden: true,
             git_ignore: true,
             git_status: true,
             follow_current_file: true,

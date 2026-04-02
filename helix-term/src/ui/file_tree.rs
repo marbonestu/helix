@@ -55,8 +55,6 @@ pub fn render_file_tree(
     let content_area = Rect::new(area.x, area.y, area.width - 1, area.height);
 
     // --- Selection style ----------------------------------------------------
-    // When the sidebar is focused use ui.menu.selected (solid highlight),
-    // otherwise ui.selection (dimmer highlight for unfocused state).
     let selected_style = if is_focused {
         theme
             .try_get("ui.sidebar.selected")
@@ -73,7 +71,6 @@ pub fn render_file_tree(
         .unwrap_or_else(|| theme.get("ui.text"));
     // Directories use the same color as function names — most themes give
     // functions a distinctive color that works well for folder labels too.
-    // Theme authors can override with ui.sidebar.directory.
     let dir_style = theme
         .try_get("ui.sidebar.directory")
         .or_else(|| theme.try_get("function"))
@@ -100,8 +97,8 @@ pub fn render_file_tree(
         let y = content_area.y + i as u16;
         let is_selected = scroll + i == selected;
 
-        // Apply selected highlight to full row first so every cell on this
-        // row gets the selection background.
+        // Apply selected highlight to full row first so every cell gets the
+        // selection background before individual elements are painted over it.
         if is_selected {
             let row = Rect::new(content_area.x, y, content_area.width, 1);
             surface.set_style(row, selected_style);
@@ -119,7 +116,41 @@ pub fn render_file_tree(
             NodeKind::Directory => dir_style,
             NodeKind::File => file_style,
         };
-        let text_style = if is_selected { selected_style } else { base_style };
+
+        // --- Git status color -----------------------------------------------
+        // The git status is expressed as the fg color of the indicator and
+        // filename. No right-side symbol is rendered.
+        let git_status = tree.git_status_for(node_id);
+        let git_color: Option<Style> = match git_status {
+            GitStatus::Modified | GitStatus::Renamed => theme
+                .try_get("ui.sidebar.git.modified")
+                .or_else(|| theme.try_get("warning"))
+                .or_else(|| theme.try_get("diff.delta")),
+            GitStatus::Untracked => theme
+                .try_get("ui.sidebar.git.untracked")
+                .or_else(|| theme.try_get("hint"))
+                .or_else(|| theme.try_get("diff.plus")),
+            GitStatus::Deleted => theme
+                .try_get("ui.sidebar.git.deleted")
+                .or_else(|| theme.try_get("error"))
+                .or_else(|| theme.try_get("diff.minus")),
+            GitStatus::Conflict => theme
+                .try_get("ui.sidebar.git.conflict")
+                .or_else(|| theme.try_get("error"))
+                .or_else(|| theme.try_get("diff.minus")),
+            GitStatus::Clean => None,
+        };
+
+        // text_style is applied to the expand indicator and the filename.
+        // On selected rows the selection background is preserved; only the
+        // fg is replaced by the git status color when present.
+        let text_style = {
+            let s = if is_selected { selected_style } else { base_style };
+            match git_color {
+                Some(git) => s.patch(git),
+                None => s,
+            }
+        };
 
         // Expand/collapse indicator
         let indicator = match node.kind {
@@ -139,13 +170,8 @@ pub fn render_file_tree(
                 NodeKind::File => file_icons::icon_for_file(&node.name),
             };
 
-            // Fallback chain for icon color:
-            //  1. Theme-specific scope  (ui.sidebar.icon.rust, …)
-            //  2. Generic sidebar icon  (ui.sidebar.icon)
-            //  3a. Directories → inherit dir_style so color matches the theme
-            //  3b. Files → canonical language color (language-brand colors
-            //      that are recognisable regardless of theme)
-            //  4. base_style (text color for this node type)
+            // Icons keep their own color regardless of git status so that
+            // file type is always visually distinct from git state.
             let icon_style = if is_selected {
                 selected_style
             } else {
@@ -164,65 +190,9 @@ pub fn render_file_tree(
             name_width = name_width.saturating_sub(2);
         }
 
-        // Filename
+        // Filename — colored by git status when dirty
         if name_width > 0 {
             surface.set_stringn(name_x, y, &node.name, name_width, text_style);
-        }
-
-        // --- Git status indicator at right edge -----------------------------
-        // Fallback chain uses standard diagnostic/diff keys that virtually
-        // every theme defines, so git colours work without any sidebar-specific
-        // entries in the theme file.
-        let git_status = tree.git_status_for(node_id);
-        if git_status != GitStatus::Clean {
-            let (symbol, git_style) = match git_status {
-                GitStatus::Modified => (
-                    "●",
-                    theme
-                        .try_get("ui.sidebar.git.modified")
-                        .or_else(|| theme.try_get("warning"))
-                        .or_else(|| theme.try_get("diff.delta"))
-                        .unwrap_or(base_style),
-                ),
-                GitStatus::Untracked => (
-                    "◌",
-                    theme
-                        .try_get("ui.sidebar.git.untracked")
-                        .or_else(|| theme.try_get("hint"))
-                        .or_else(|| theme.try_get("diff.plus"))
-                        .unwrap_or(base_style),
-                ),
-                GitStatus::Deleted => (
-                    "✕",
-                    theme
-                        .try_get("ui.sidebar.git.deleted")
-                        .or_else(|| theme.try_get("error"))
-                        .or_else(|| theme.try_get("diff.minus"))
-                        .unwrap_or(base_style),
-                ),
-                GitStatus::Conflict => (
-                    "⚠",
-                    theme
-                        .try_get("ui.sidebar.git.conflict")
-                        .or_else(|| theme.try_get("error"))
-                        .or_else(|| theme.try_get("diff.minus"))
-                        .unwrap_or(base_style),
-                ),
-                GitStatus::Renamed => (
-                    "→",
-                    theme
-                        .try_get("ui.sidebar.git.modified")
-                        .or_else(|| theme.try_get("warning"))
-                        .or_else(|| theme.try_get("diff.delta"))
-                        .unwrap_or(base_style),
-                ),
-                GitStatus::Clean => unreachable!(),
-            };
-
-            let git_x = content_area.x + content_area.width - 2;
-            if git_x > name_x {
-                surface.set_string(git_x, y, symbol, git_style);
-            }
         }
     }
 

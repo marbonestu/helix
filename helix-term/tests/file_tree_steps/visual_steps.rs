@@ -201,33 +201,33 @@ fn alex_switches_to_integration(world: &mut FileTreeWorld) {
 // Then — git status
 // ---------------------------------------------------------------------------
 
-#[then("the row for main.rs displays a filled dot symbol (●)")]
-fn main_rs_filled_dot(world: &mut FileTreeWorld) {
+#[then("the row for main.rs is styled with the modified color")]
+fn main_rs_modified_color(world: &mut FileTreeWorld) {
     assert_node_git_status(world, "main.rs", GitStatus::Modified);
 }
 
-#[then("the row for new_file.rs displays a hollow dot symbol (◌)")]
-fn new_file_hollow_dot(world: &mut FileTreeWorld) {
+#[then("the row for new_file.rs is styled with the untracked color")]
+fn new_file_untracked_color(world: &mut FileTreeWorld) {
     assert_node_git_status(world, "new_file.rs", GitStatus::Untracked);
 }
 
-#[then("the row for lib.rs displays a warning symbol (⚠)")]
-fn lib_rs_warning(world: &mut FileTreeWorld) {
+#[then("the row for lib.rs is styled with the conflict color")]
+fn lib_rs_conflict_color(world: &mut FileTreeWorld) {
     assert_node_git_status(world, "lib.rs", GitStatus::Conflict);
 }
 
-#[then("the row for old.rs displays a cross symbol (✕)")]
-fn old_rs_cross(world: &mut FileTreeWorld) {
+#[then("the row for old.rs is styled with the deleted color")]
+fn old_rs_deleted_color(world: &mut FileTreeWorld) {
     assert_node_git_status(world, "old.rs", GitStatus::Deleted);
 }
 
-#[then("the row for README.md shows no git status symbol")]
-fn readme_no_symbol(world: &mut FileTreeWorld) {
+#[then("the row for README.md uses the default file color")]
+fn readme_default_color(world: &mut FileTreeWorld) {
     assert_node_git_status(world, "README.md", GitStatus::Clean);
 }
 
-#[then("src/ displays the modified symbol (●)")]
-fn src_displays_modified(world: &mut FileTreeWorld) {
+#[then("src/ is styled with the modified color")]
+fn src_styled_modified(world: &mut FileTreeWorld) {
     let tree = world.tree.as_ref().expect("no FileTree");
     let src_id = tree
         .nodes()
@@ -245,8 +245,8 @@ fn src_displays_modified(world: &mut FileTreeWorld) {
     }
 }
 
-#[then("src/ displays the conflict symbol (⚠)")]
-fn src_displays_conflict(world: &mut FileTreeWorld) {
+#[then("src/ is styled with the conflict color")]
+fn src_styled_conflict(world: &mut FileTreeWorld) {
     let tree = world.tree.as_ref().expect("no FileTree");
     let src_id = tree
         .nodes()
@@ -264,8 +264,8 @@ fn src_displays_conflict(world: &mut FileTreeWorld) {
     }
 }
 
-#[then("tests/ shows no git status symbol")]
-fn tests_no_symbol(world: &mut FileTreeWorld) {
+#[then("tests/ uses the default directory color")]
+fn tests_default_color(world: &mut FileTreeWorld) {
     let tree = world.tree.as_ref().expect("no FileTree");
     let id = tree
         .nodes()

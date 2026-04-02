@@ -1,58 +1,59 @@
 @file-tree @visual
 Feature: Visual indicators in the file tree
 
-  Alex the developer can see git status, file type icons, and theme-aware colors
-  in the file tree, giving a quick overview of project state without opening each file.
+  Alex the developer can see git status through colored filenames, file type
+  icons, and theme-aware colors in the file tree, giving a quick overview of
+  project state without opening each file.
 
   Background:
     Given the file tree sidebar is visible
     And the project is a git repository
 
-  Rule: Git status symbols appear next to modified files
+  Rule: Git-changed files are highlighted with status colors on the filename
 
-    Example: A modified tracked file shows a filled dot
+    Example: A modified tracked file has its name shown in the modified color
       Given src/main.rs has uncommitted edits
       When Alex looks at the file tree
-      Then the row for main.rs displays a filled dot symbol (●)
+      Then the row for main.rs is styled with the modified color
 
-    Example: An untracked file shows a hollow dot
+    Example: An untracked file has its name shown in the untracked color
       Given new_file.rs has never been committed
       When Alex looks at the file tree
-      Then the row for new_file.rs displays a hollow dot symbol (◌)
+      Then the row for new_file.rs is styled with the untracked color
 
-    Example: A file with merge conflicts shows a warning symbol
+    Example: A file with merge conflicts is highlighted with the conflict color
       Given src/lib.rs has unresolved merge conflicts
       When Alex looks at the file tree
-      Then the row for lib.rs displays a warning symbol (⚠)
+      Then the row for lib.rs is styled with the conflict color
 
-    Example: A deleted (staged) file shows a cross symbol
+    Example: A deleted staged file is highlighted with the deleted color
       Given old.rs has been staged for deletion
       When Alex looks at the file tree
-      Then the row for old.rs displays a cross symbol (✕)
+      Then the row for old.rs is styled with the deleted color
 
-    Example: A clean file shows no status symbol
+    Example: A clean file uses the normal file color
       Given README.md has no uncommitted changes
       When Alex looks at the file tree
-      Then the row for README.md shows no git status symbol
+      Then the row for README.md uses the default file color
 
-  Rule: A directory's status reflects the worst status among its descendants
+  Rule: A directory's status color reflects the worst status among its descendants
 
-    Example: Directory shows modified when any descendant is modified
+    Example: Directory is colored modified when any descendant is modified
       Given src/main.rs has uncommitted edits
       And all other files in src/ are clean
       When Alex looks at the row for src/
-      Then src/ displays the modified symbol (●)
+      Then src/ is styled with the modified color
 
-    Example: Directory shows conflict when a descendant has conflicts
+    Example: Directory is colored conflict when a descendant has conflicts
       Given src/lib.rs has merge conflicts
       And src/main.rs is only modified
       When Alex looks at the row for src/
-      Then src/ displays the conflict symbol (⚠)
+      Then src/ is styled with the conflict color
 
-    Example: Clean directory shows no symbol
+    Example: Clean directory uses the default directory color
       Given all files in tests/ are committed and unchanged
       When Alex looks at the row for tests/
-      Then tests/ shows no git status symbol
+      Then tests/ uses the default directory color
 
   Rule: File type icons are shown when icons are enabled in config
 
