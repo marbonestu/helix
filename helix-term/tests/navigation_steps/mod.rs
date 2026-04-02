@@ -168,7 +168,7 @@ impl NavigationWorld {
 // Shared step definitions used across both flash_jump and flash_search
 // ---------------------------------------------------------------------------
 
-#[given(regex = r#"the buffer contains "(.+)""#)]
+#[given(regex = r#"^the buffer contains "(.+)"$"#)]
 fn given_buffer_contains(world: &mut NavigationWorld, content: String) {
     // Replace literal \n escapes with actual newlines; place cursor at char 0.
     let text = content.replace("\\n", "\n");
@@ -176,7 +176,7 @@ fn given_buffer_contains(world: &mut NavigationWorld, content: String) {
     world.buffer_text = format!("#[|{first_char}]#{}", &text[first_char.len_utf8()..]);
 }
 
-#[when(regex = r#"Alex presses "([^"]+)" and types "([^"]+)""#)]
+#[when(regex = r#"^Alex presses "([^"]+)" and types "([^"]+)"$"#)]
 async fn when_press_and_type(
     world: &mut NavigationWorld,
     binding: String,
@@ -187,7 +187,7 @@ async fn when_press_and_type(
     Ok(())
 }
 
-#[when(regex = r#"Alex presses "([^"]+)", types "([^"]+)", then types "([^"]+)""#)]
+#[when(regex = r#"^Alex presses "([^"]+)", types "([^"]+)", then types "([^"]+)"$"#)]
 async fn when_press_type_type(
     world: &mut NavigationWorld,
     binding: String,
@@ -199,7 +199,7 @@ async fn when_press_type_type(
     Ok(())
 }
 
-#[when(regex = r#"Alex presses "([^"]+)", types "([^"]+)", then presses Escape"#)]
+#[when(regex = r#"^Alex presses "([^"]+)", types "([^"]+)", then presses Escape$"#)]
 async fn when_press_type_escape(
     world: &mut NavigationWorld,
     binding: String,
@@ -210,7 +210,7 @@ async fn when_press_type_escape(
     Ok(())
 }
 
-#[then(regex = r"the cursor is at position (\d+)")]
+#[then(regex = r"^the cursor is at position (\d+)$")]
 fn then_cursor_at_position(world: &mut NavigationWorld, pos: usize) {
     let cursor = world
         .result_cursor

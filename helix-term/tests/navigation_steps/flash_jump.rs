@@ -2,38 +2,34 @@ use cucumber::{then, when};
 
 use super::NavigationWorld;
 
-// ---------------------------------------------------------------------------
-// When steps — flash-jump-specific sequences
-// ---------------------------------------------------------------------------
-
-#[when(regex = r#"Alex presses "([^"]+)", types "([^"]+)", then presses Backspace"#)]
-async fn when_press_type_backspace(
+#[when(
+    regex = r#"^Alex presses "([^"]+)", types "([^"]+)", presses Backspace, then types "([^"]+)"$"#
+)]
+async fn when_press_type_backspace_type(
     world: &mut NavigationWorld,
     binding: String,
     chars: String,
+    after: String,
 ) -> anyhow::Result<()> {
     world
-        .send_keys(&format!("{binding}{chars}<backspace>"))
+        .send_keys(&format!("{binding}{chars}<backspace>{after}"))
         .await?;
     world.capture_state();
     Ok(())
 }
 
-#[when(regex = r#"Alex enters select mode, presses "([^"]+)", and types "([^"]+)""#)]
+/// extend_flash_jump is bound to `gS` inside the select-mode goto submenu.
+#[when(regex = r#"^Alex enters select mode, presses "([^"]+)", and types "([^"]+)"$"#)]
 async fn when_select_mode_press_type(
     world: &mut NavigationWorld,
     binding: String,
     chars: String,
 ) -> anyhow::Result<()> {
-    // Enter select mode with 'v', then use the binding and type the chars.
+    // 'v' enters select mode; binding is the flash jump key (gS); chars is the query.
     world.send_keys(&format!("v{binding}{chars}")).await?;
     world.capture_state();
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Then steps — flash-jump-specific assertions
-// ---------------------------------------------------------------------------
 
 #[then("the jumplist has grown by one entry")]
 fn then_jumplist_grew(world: &mut NavigationWorld) {
@@ -62,7 +58,7 @@ fn then_flash_prompt_active(world: &mut NavigationWorld) {
     );
 }
 
-#[then(regex = r"the selection anchor is at position (\d+)")]
+#[then(regex = r"^the selection anchor is at position (\d+)$")]
 fn then_anchor_at_position(world: &mut NavigationWorld, pos: usize) {
     let anchor = world
         .result_anchor

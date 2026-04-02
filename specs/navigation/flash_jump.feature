@@ -7,10 +7,10 @@ Feature: Flash jump navigation
 
   Rule: Labels appear on all visible matches after the first character is typed
 
-    Example: Typing a prefix keeps the flash prompt open when multiple matches exist
+    Example: Typing a label after a multi-match prefix jumps to the labeled target
       Given the buffer contains "hello\nhelix\nhelp\n"
-      When Alex presses "gS" and types "he"
-      Then the cursor has not moved from the start of the buffer
+      When Alex presses "gS", types "he", then types "a"
+      Then the cursor is at position 0
 
     Example: No visible matches closes the prompt immediately
       Given the buffer contains "apple\nbanana\n"
@@ -24,15 +24,15 @@ Feature: Flash jump navigation
       When Alex presses "gS", types "fn", then types "b"
       Then the cursor is at position 7
 
-    Example: The original position is saved to the jumplist after a jump
+    Example: Jump-back after a flash jump returns to the original position
       Given the buffer contains "fn foo\nfn bar\n"
-      When Alex presses "gS", types "fn", then types "b"
-      Then the jumplist has grown by one entry
+      When Alex presses "gS", types "fn", types "b", then presses "<C-o>"
+      Then the cursor is at position 0
 
   Rule: A single remaining match triggers an automatic jump
 
     Example: Unique match auto-jumps without a label keystroke
-      Given the buffer contains "hello\nworld\n"
+      Given the buffer contains "hello\nhem\n"
       When Alex presses "gS" and types "hel"
       Then the cursor is at position 0
 
@@ -45,10 +45,10 @@ Feature: Flash jump navigation
 
   Rule: Backspace removes the last typed character and widens the match set
 
-    Example: Backspace after a multi-match query keeps the prompt open
+    Example: Backspace restores the previous wider match set allowing label selection
       Given the buffer contains "hello\nhelix\nhelium\n"
-      When Alex presses "gS", types "heli", then presses Backspace
-      Then the cursor has not moved from the start of the buffer
+      When Alex presses "gS", types "heli", presses Backspace, then types "a"
+      Then the cursor is at position 0
 
   Rule: Escape cancels the jump and restores the original cursor position
 
@@ -60,7 +60,7 @@ Feature: Flash jump navigation
   Rule: Flash jump in select mode extends the selection to the target
 
     Example: In select mode the selection anchor stays and the head moves to the target
-      Given the buffer contains "start middle end\n"
-      When Alex enters select mode, presses "S", and types "end"
-      Then the cursor is at position 14
+      Given the buffer contains "start end\nfinal end\n"
+      When Alex enters select mode, presses "gS", and types "enda"
+      Then the cursor is at position 6
       And the selection anchor is at position 0

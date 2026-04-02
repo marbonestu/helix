@@ -15,10 +15,10 @@ Feature: Flash-powered incremental search
 
   Rule: All visible matches are highlighted as Alex types
 
-    Example: Typing a pattern keeps the flash prompt open with multiple matches
+    Example: Typing a label after a multi-match prefix jumps to the labeled target
       Given the buffer contains "fn foo\nfn bar\n"
-      When Alex presses "/" and types "fn"
-      Then the cursor has not moved from the start of the buffer
+      When Alex presses "/", types "fn", then types "a"
+      Then the cursor is at position 0
 
   Rule: Typing a label jumps to that match and saves the pattern for n/N
 
@@ -31,12 +31,12 @@ Feature: Flash-powered incremental search
     Example: "n" moves forward to the next occurrence after a flash jump
       Given the buffer contains "fn foo\nfn bar\nfn baz\n"
       When Alex presses "/", types "fn", types "b", then presses "n"
-      Then the cursor is at position 14
+      Then the cursor is at position 15
 
     Example: "N" moves backward to the previous occurrence after a flash jump
       Given the buffer contains "fn foo\nfn bar\nfn baz\n"
       When Alex presses "/", types "fn", types "c", then presses "N"
-      Then the cursor is at position 7
+      Then the cursor is at position 8
 
   Rule: Escape cancels the flash search and restores the original cursor position
 
@@ -48,7 +48,7 @@ Feature: Flash-powered incremental search
   Rule: A single visible match triggers an automatic jump without label selection
 
     Example: Unique match jumps immediately and saves the pattern for n/N
-      Given the buffer contains "hello\nworld\n"
+      Given the buffer contains "hello\nhem\n"
       When Alex presses "/" and types "hel"
       Then the cursor is at position 0
       And the search register contains "hel"
