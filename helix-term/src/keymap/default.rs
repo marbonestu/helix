@@ -194,6 +194,11 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
         "C-u" => page_cursor_half_up,
         "C-d" => page_cursor_half_down,
 
+        "C-right" => grow_width,
+        "C-left" => shrink_width,
+        "C-down" => grow_height,
+        "C-up" => shrink_height,
+
         "C-w" => { "Window"
             "C-w" | "w" => rotate_view,
             "C-s" | "s" => hsplit,
