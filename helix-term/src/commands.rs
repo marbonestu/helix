@@ -592,6 +592,20 @@ impl MappableCommand {
         goto_prev_xml_element, "Goto previous (X)HTML element",
         goto_next_entry, "Goto next pairing",
         goto_prev_entry, "Goto previous pairing",
+        ts_flash_next_function, "Flash-jump to a visible function (forward)",
+        ts_flash_prev_function, "Flash-jump to a visible function (backward)",
+        ts_flash_next_class, "Flash-jump to a visible type definition (forward)",
+        ts_flash_prev_class, "Flash-jump to a visible type definition (backward)",
+        ts_flash_next_parameter, "Flash-jump to a visible parameter (forward)",
+        ts_flash_prev_parameter, "Flash-jump to a visible parameter (backward)",
+        ts_flash_next_comment, "Flash-jump to a visible comment (forward)",
+        ts_flash_prev_comment, "Flash-jump to a visible comment (backward)",
+        ts_flash_next_test, "Flash-jump to a visible test (forward)",
+        ts_flash_prev_test, "Flash-jump to a visible test (backward)",
+        ts_flash_next_xml_element, "Flash-jump to a visible (X)HTML element (forward)",
+        ts_flash_prev_xml_element, "Flash-jump to a visible (X)HTML element (backward)",
+        ts_flash_next_entry, "Flash-jump to a visible entry/pairing (forward)",
+        ts_flash_prev_entry, "Flash-jump to a visible entry/pairing (backward)",
         goto_next_paragraph, "Goto next paragraph",
         goto_prev_paragraph, "Goto previous paragraph",
         dap_launch, "Launch debug target",
@@ -6276,6 +6290,144 @@ fn goto_next_entry(cx: &mut Context) {
 
 fn goto_prev_entry(cx: &mut Context) {
     goto_ts_object_impl(cx, "entry", Direction::Backward)
+}
+
+/// Opens a [`TsFlashPicker`] that labels every visible treesitter object of
+/// `object` in the given `direction` within the current viewport.
+///
+/// - If no objects are found, sets the "No matches" status and returns.
+/// - If exactly one object is visible, jumps directly without showing the
+///   picker (auto-jump, matches flash behaviour).
+/// - Otherwise, pushes a [`TsFlashPicker`] layer so the user can pick by
+///   pressing the displayed label character.
+fn ts_flash_object_impl(cx: &mut Context, object: &'static str, dir: Direction) {
+    let alphabet: Vec<char> = {
+        let config = cx.editor.config();
+        if config.jump_label_alphabet.is_empty() {
+            return;
+        }
+        config.jump_label_alphabet.clone()
+    };
+
+    let loader = cx.editor.syn_loader.load();
+    let (nodes, view_id, doc_id, snapshot) = {
+        let (view, doc) = current_ref!(cx.editor);
+        let view_id = view.id;
+        let doc_id = doc.id();
+        let snapshot = doc.selection(view_id).clone();
+
+        let Some(syntax) = doc.syntax() else {
+            cx.editor
+                .set_status("Syntax-tree is not available in current buffer");
+            return;
+        };
+
+        let text = doc.text().slice(..);
+        let viewport_start =
+            text.line_to_char(text.char_to_line(doc.view_offset(view_id).anchor));
+        let viewport_end = text.line_to_char(
+            (view.estimate_last_doc_line(doc) + 1).min(text.len_lines()),
+        );
+        let cursor_range = snapshot.primary();
+        let root = syntax.tree().root_node();
+
+        let nodes = movement::find_all_treesitter_objects(
+            text,
+            cursor_range,
+            viewport_start..viewport_end,
+            object,
+            dir,
+            &root,
+            syntax,
+            &loader,
+        );
+
+        (nodes, view_id, doc_id, snapshot)
+    };
+    drop(loader);
+
+    if nodes.is_empty() {
+        cx.editor.set_status("No matches");
+        return;
+    }
+
+    if nodes.len() == 1 {
+        let target_pos = nodes[0].from();
+        let (view, doc) = current!(cx.editor);
+        push_jump(view, doc);
+        let text = doc.text().slice(..);
+        let target_end = next_grapheme_boundary(text, target_pos);
+        let range = Range::new(target_pos, target_end).with_direction(Direction::Forward);
+        doc.set_selection(view_id, range.into());
+        return;
+    }
+
+    let picker = crate::ui::ts_flash::TsFlashPicker::new(
+        nodes,
+        alphabet,
+        view_id,
+        doc_id,
+        snapshot,
+    );
+    picker.show_labels(cx.editor);
+    cx.editor.set_status(object);
+    cx.push_layer(Box::new(picker));
+}
+
+fn ts_flash_next_function(cx: &mut Context) {
+    ts_flash_object_impl(cx, "function", Direction::Forward)
+}
+
+fn ts_flash_prev_function(cx: &mut Context) {
+    ts_flash_object_impl(cx, "function", Direction::Backward)
+}
+
+fn ts_flash_next_class(cx: &mut Context) {
+    ts_flash_object_impl(cx, "class", Direction::Forward)
+}
+
+fn ts_flash_prev_class(cx: &mut Context) {
+    ts_flash_object_impl(cx, "class", Direction::Backward)
+}
+
+fn ts_flash_next_parameter(cx: &mut Context) {
+    ts_flash_object_impl(cx, "parameter", Direction::Forward)
+}
+
+fn ts_flash_prev_parameter(cx: &mut Context) {
+    ts_flash_object_impl(cx, "parameter", Direction::Backward)
+}
+
+fn ts_flash_next_comment(cx: &mut Context) {
+    ts_flash_object_impl(cx, "comment", Direction::Forward)
+}
+
+fn ts_flash_prev_comment(cx: &mut Context) {
+    ts_flash_object_impl(cx, "comment", Direction::Backward)
+}
+
+fn ts_flash_next_test(cx: &mut Context) {
+    ts_flash_object_impl(cx, "test", Direction::Forward)
+}
+
+fn ts_flash_prev_test(cx: &mut Context) {
+    ts_flash_object_impl(cx, "test", Direction::Backward)
+}
+
+fn ts_flash_next_xml_element(cx: &mut Context) {
+    ts_flash_object_impl(cx, "xml-element", Direction::Forward)
+}
+
+fn ts_flash_prev_xml_element(cx: &mut Context) {
+    ts_flash_object_impl(cx, "xml-element", Direction::Backward)
+}
+
+fn ts_flash_next_entry(cx: &mut Context) {
+    ts_flash_object_impl(cx, "entry", Direction::Forward)
+}
+
+fn ts_flash_prev_entry(cx: &mut Context) {
+    ts_flash_object_impl(cx, "entry", Direction::Backward)
 }
 
 fn select_textobject_around(cx: &mut Context) {
