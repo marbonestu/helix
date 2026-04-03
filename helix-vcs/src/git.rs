@@ -132,6 +132,42 @@ fn status(repo: &Repository, f: impl Fn(Result<FileChange>) -> bool) -> Result<(
         .ok_or_else(|| anyhow::anyhow!("working tree not found"))?
         .to_path_buf();
 
+    // HEAD → index: report files that are in the index but absent from HEAD as
+    // Added (staged new files). The index-worktree iterator below only compares
+    // index vs working tree, so staged new files that match their worktree
+    // counterpart would otherwise be invisible.
+    //
+    // Build a path set from HEAD once so each index-entry lookup is O(1) rather
+    // than O(tree_depth) per entry.
+    {
+        let index = repo.index_or_empty()?;
+        let head_paths: std::collections::HashSet<gix::bstr::BString> = repo
+            .head_commit()
+            .ok()
+            .and_then(|c| c.tree().ok())
+            .and_then(|tree| tree.traverse().breadthfirst.files().ok())
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .filter(|e| !e.mode.is_tree())
+                    .map(|e| e.filepath)
+                    .collect()
+            })
+            .unwrap_or_default();
+        for entry in index.entries() {
+            let path_bytes = entry.path(&index);
+            if !head_paths.contains(path_bytes) {
+                let Ok(rel_path) = path_bytes.to_path() else {
+                    continue;
+                };
+                let path = work_dir.join(rel_path);
+                if !f(Ok(FileChange::Added { path })) {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     let status_platform = repo
         .status(gix::progress::Discard)?
         // Here we discard the `status.showUntrackedFiles` config, as it makes little sense in

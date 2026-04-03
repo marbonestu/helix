@@ -3304,10 +3304,33 @@ fn focus_file_tree(cx: &mut Context) {
 
 fn reveal_in_file_tree(cx: &mut Context) {
     let config = cx.editor.config().file_tree.clone();
-    if let Some(path) = doc!(cx.editor).path().cloned() {
-        if let Some(ref mut tree) = cx.editor.file_tree {
-            tree.reveal_path(&path, &config);
+    let path = match doc!(cx.editor).path().cloned() {
+        Some(p) => p,
+        None => return,
+    };
+
+    // Ensure the tree is initialised and visible.
+    if cx.editor.file_tree.is_none() {
+        let root = find_workspace().0;
+        match helix_view::file_tree::FileTree::new(root, &config) {
+            Ok(mut tree) => {
+                if config.git_status {
+                    tree.request_git_refresh();
+                }
+                cx.editor.file_tree = Some(tree);
+            }
+            Err(e) => {
+                cx.editor
+                    .set_error(format!("Failed to open file tree: {}", e));
+                return;
+            }
         }
+    }
+    cx.editor.file_tree_visible = true;
+    cx.editor.file_tree_focused = true;
+
+    if let Some(ref mut tree) = cx.editor.file_tree {
+        tree.reveal_path(&path, &config);
     }
 }
 
@@ -3488,6 +3511,7 @@ fn changed_file_picker(cx: &mut Context) {
     pub struct FileChangeData {
         cwd: PathBuf,
         style_untracked: Style,
+        style_added: Style,
         style_modified: Style,
         style_conflict: Style,
         style_deleted: Style,
@@ -3510,7 +3534,8 @@ fn changed_file_picker(cx: &mut Context) {
     let columns = [
         PickerColumn::new("change", |change: &FileChange, data: &FileChangeData| {
             match change {
-                FileChange::Untracked { .. } => Span::styled("+ untracked", data.style_untracked),
+                FileChange::Untracked { .. } => Span::styled("? untracked", data.style_untracked),
+                FileChange::Added { .. } => Span::styled("+ added", data.style_added),
                 FileChange::Modified { .. } => Span::styled("~ modified", data.style_modified),
                 FileChange::Conflict { .. } => Span::styled("x conflict", data.style_conflict),
                 FileChange::Deleted { .. } => Span::styled("- deleted", data.style_deleted),
@@ -3527,6 +3552,7 @@ fn changed_file_picker(cx: &mut Context) {
             };
             match change {
                 FileChange::Untracked { path } => display_path(path),
+                FileChange::Added { path } => display_path(path),
                 FileChange::Modified { path } => display_path(path),
                 FileChange::Conflict { path } => display_path(path),
                 FileChange::Deleted { path } => display_path(path),
@@ -3545,6 +3571,7 @@ fn changed_file_picker(cx: &mut Context) {
         FileChangeData {
             cwd: cwd.clone(),
             style_untracked: added,
+            style_added: added,
             style_modified: modified,
             style_conflict: conflict,
             style_deleted: deleted,

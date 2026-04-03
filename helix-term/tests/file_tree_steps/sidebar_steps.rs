@@ -2,6 +2,8 @@
 ///
 /// These scenarios require a live [`Application`] event loop so the
 /// `<space>e` key binding and focus transitions can be exercised end-to-end.
+use std::path::PathBuf;
+
 use cucumber::{given, then, when};
 
 use super::FileTreeWorld;
@@ -49,7 +51,7 @@ async fn focus_in_tree(world: &mut FileTreeWorld) {
         .unwrap_or(false);
     if !is_visible {
         let app = world.app.as_mut().unwrap();
-        crate::helpers::test_key_sequence(app, Some("<space>e"), None, false)
+        crate::helpers::test_key_sequence(app, Some("<space>E"), None, false)
             .await
             .unwrap();
     }
@@ -78,7 +80,7 @@ async fn alex_expands_src(world: &mut FileTreeWorld) {
         .unwrap_or(false);
     if !is_visible {
         let app = world.app.as_mut().unwrap();
-        crate::helpers::test_key_sequence(app, Some("<space>e"), None, false)
+        crate::helpers::test_key_sequence(app, Some("<space>E"), None, false)
             .await
             .unwrap();
     }
@@ -102,10 +104,10 @@ async fn alex_expands_src(world: &mut FileTreeWorld) {
 #[given("Alex closes and reopens the sidebar")]
 async fn alex_closes_and_reopens(world: &mut FileTreeWorld) {
     if let Some(app) = world.app.as_mut() {
-        crate::helpers::test_key_sequence(app, Some("<space>e"), None, false)
+        crate::helpers::test_key_sequence(app, Some("<space>E"), None, false)
             .await
             .unwrap();
-        crate::helpers::test_key_sequence(app, Some("<space>e"), None, false)
+        crate::helpers::test_key_sequence(app, Some("<space>E"), None, false)
             .await
             .unwrap();
     }
@@ -121,7 +123,7 @@ async fn alex_presses_space_e(world: &mut FileTreeWorld) {
         world.build_app().expect("failed to build Application");
     }
     let app = world.app.as_mut().unwrap();
-    crate::helpers::test_key_sequence(app, Some("<space>e"), None, false)
+    crate::helpers::test_key_sequence(app, Some("<space>E"), None, false)
         .await
         .unwrap();
 }
@@ -304,4 +306,49 @@ fn src_still_expanded(world: &mut FileTreeWorld) {
         .iter()
         .any(|(_, n)| n.name == "src" && n.expanded);
     assert!(src_expanded, "expected src/ to still be expanded after reopen");
+}
+
+// ---------------------------------------------------------------------------
+// Given / When / Then — reveal_in_file_tree
+// ---------------------------------------------------------------------------
+
+#[given("Alex has opened src/main.rs in the editor")]
+fn alex_opens_main_rs(world: &mut FileTreeWorld) {
+    let path = world.workspace_dir.path().join("src/main.rs");
+    if world.app.is_none() {
+        world.pending_files.push(path);
+        world.build_app().expect("failed to build Application");
+    } else if let Some(app) = world.app.as_mut() {
+        let _ = app.editor.open(&path, helix_view::editor::Action::Replace);
+    }
+}
+
+#[when("Alex runs the reveal-in-file-tree command")]
+async fn alex_runs_reveal(world: &mut FileTreeWorld) {
+    if world.app.is_none() {
+        world.build_app().expect("failed to build Application");
+    }
+    let app = world.app.as_mut().unwrap();
+    crate::helpers::test_key_sequence(app, Some("<space><A-e>"), None, false)
+        .await
+        .unwrap();
+}
+
+#[then("src/main.rs is selected in the file tree")]
+fn main_rs_selected(world: &mut FileTreeWorld) {
+    let app = world.app.as_ref().expect("no Application");
+    let tree = app
+        .editor
+        .file_tree
+        .as_ref()
+        .expect("no FileTree in editor");
+    let selected_name = tree
+        .selected_id()
+        .and_then(|id| tree.nodes().get(id))
+        .map(|n| n.name.as_str())
+        .unwrap_or("");
+    assert_eq!(
+        selected_name, "main.rs",
+        "expected main.rs to be selected in the tree, got {selected_name:?}"
+    );
 }

@@ -1698,7 +1698,16 @@ impl EditorView {
                 };
 
                 if let Some(path) = open_path {
-                    if let Err(e) =
+                    let view_count = cx.editor.tree.views().count();
+                    if view_count > 1 {
+                        if let Some(picker) =
+                            crate::ui::split_picker::SplitPicker::new(path, cx.editor)
+                        {
+                            cx.callback.push(Box::new(move |compositor, _cx| {
+                                compositor.push(Box::new(picker));
+                            }));
+                        }
+                    } else if let Err(e) =
                         cx.editor.open(&path, helix_view::editor::Action::Replace)
                     {
                         cx.editor.set_error(format!("{}", e));
@@ -1708,7 +1717,12 @@ impl EditorView {
                 }
                 EventResult::Consumed(None)
             }
-            KeyCode::Char('q') | KeyCode::Esc => {
+            KeyCode::Char('q') => {
+                cx.editor.file_tree_visible = false;
+                cx.editor.file_tree_focused = false;
+                EventResult::Consumed(None)
+            }
+            KeyCode::Esc => {
                 cx.editor.file_tree_focused = false;
                 EventResult::Consumed(None)
             }
@@ -1913,6 +1927,12 @@ impl EditorView {
                 EventResult::Consumed(None)
             }
             KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                cx.editor.file_tree_focused = false;
+                EventResult::Ignored(None)
+            }
+            // Pass space through so chord sequences like `space e`, `space f`, etc.
+            // work from the file tree.
+            KeyCode::Char(' ') if key.modifiers.is_empty() => {
                 cx.editor.file_tree_focused = false;
                 EventResult::Ignored(None)
             }

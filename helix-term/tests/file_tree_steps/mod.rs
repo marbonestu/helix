@@ -1,6 +1,7 @@
 mod file_clipboard_steps;
 mod file_creation_steps;
 mod file_deletion_steps;
+mod file_open_split_steps;
 mod file_rename_steps;
 mod navigation_steps;
 mod search_steps;
@@ -138,7 +139,7 @@ async fn given_sidebar_visible(world: &mut FileTreeWorld) {
             .unwrap_or(false);
         if !is_visible {
             let app = world.app.as_mut().unwrap();
-            crate::helpers::test_key_sequence(app, Some("<space>e"), None, false)
+            crate::helpers::test_key_sequence(app, Some("<space>E"), None, false)
                 .await
                 .unwrap();
         }
@@ -160,7 +161,7 @@ async fn given_sidebar_visible_and_focused(world: &mut FileTreeWorld) {
             .unwrap_or(false);
         if !is_visible {
             let app = world.app.as_mut().unwrap();
-            crate::helpers::test_key_sequence(app, Some("<space>e"), None, false)
+            crate::helpers::test_key_sequence(app, Some("<space>E"), None, false)
                 .await
                 .unwrap();
         }

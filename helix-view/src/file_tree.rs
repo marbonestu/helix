@@ -67,6 +67,7 @@ slotmap::new_key_type! {
 pub enum GitStatus {
     Clean,
     Untracked,
+    Added,
     Modified,
     Conflict,
     Deleted,
@@ -78,10 +79,11 @@ impl GitStatus {
         match self {
             GitStatus::Clean => 0,
             GitStatus::Untracked => 1,
-            GitStatus::Renamed => 2,
-            GitStatus::Deleted => 3,
-            GitStatus::Modified => 4,
-            GitStatus::Conflict => 5,
+            GitStatus::Added => 2,
+            GitStatus::Renamed => 3,
+            GitStatus::Deleted => 4,
+            GitStatus::Modified => 5,
+            GitStatus::Conflict => 6,
         }
     }
 }
@@ -1575,6 +1577,7 @@ impl FileTree {
             if let Ok(change) = result {
                 let status = match &change {
                     FileChange::Untracked { .. } => GitStatus::Untracked,
+                    FileChange::Added { .. } => GitStatus::Added,
                     FileChange::Modified { .. } => GitStatus::Modified,
                     FileChange::Deleted { .. } => GitStatus::Deleted,
                     FileChange::Renamed { .. } => GitStatus::Renamed,
@@ -1716,7 +1719,8 @@ mod tests {
     #[test]
     fn test_git_status_severity_ordering() {
         assert!(GitStatus::Clean.severity() < GitStatus::Untracked.severity());
-        assert!(GitStatus::Untracked.severity() < GitStatus::Renamed.severity());
+        assert!(GitStatus::Untracked.severity() < GitStatus::Added.severity());
+        assert!(GitStatus::Added.severity() < GitStatus::Renamed.severity());
         assert!(GitStatus::Renamed.severity() < GitStatus::Deleted.severity());
         assert!(GitStatus::Deleted.severity() < GitStatus::Modified.severity());
         assert!(GitStatus::Modified.severity() < GitStatus::Conflict.severity());

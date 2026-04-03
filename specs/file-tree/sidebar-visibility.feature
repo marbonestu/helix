@@ -51,13 +51,29 @@ Feature: File tree sidebar visibility and focus
       Then keyboard focus returns to the editor split
       And the file tree sidebar remains visible
 
-    Example: Pressing q from the tree unfocuses without closing
+    Example: Pressing q from the tree closes the sidebar
       Given keyboard focus is in the file tree sidebar
       When Alex presses q
-      Then keyboard focus returns to the editor split
-      And the file tree sidebar remains visible
+      Then the file tree sidebar is hidden
 
     Example: Pressing escape from the tree unfocuses without closing
       Given keyboard focus is in the file tree sidebar
       When Alex presses escape
       Then keyboard focus returns to the editor split
+
+  Rule: The current buffer's file can be revealed in the tree
+
+    Example: Reveal opens the sidebar when it is hidden
+      Given the file tree sidebar is hidden
+      And Alex has opened src/main.rs in the editor
+      When Alex runs the reveal-in-file-tree command
+      Then the file tree sidebar becomes visible
+      And keyboard focus moves into the file tree sidebar
+      And src/main.rs is selected in the file tree
+
+    Example: Reveal focuses the tree when it is already visible
+      Given the file tree sidebar is visible
+      And Alex has opened src/main.rs in the editor
+      When Alex runs the reveal-in-file-tree command
+      Then keyboard focus moves into the file tree sidebar
+      And src/main.rs is selected in the file tree

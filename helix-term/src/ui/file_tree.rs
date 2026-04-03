@@ -71,9 +71,14 @@ pub fn render_file_tree(
         .unwrap_or_else(|| theme.get("ui.text"));
     // Directories use the same color as function names — most themes give
     // functions a distinctive color that works well for folder labels too.
+    // Italic is stripped because italic directory names look odd in a tree.
     let dir_style = theme
         .try_get("ui.sidebar.directory")
-        .or_else(|| theme.try_get("function"))
+        .or_else(|| {
+            theme
+                .try_get("function")
+                .map(|s| s.remove_modifier(Modifier::ITALIC))
+        })
         .unwrap_or_else(|| theme.get("ui.text"));
 
     // Reserve the bottom row when any prompt is active or a status message is pending.
@@ -127,10 +132,10 @@ pub fn render_file_tree(
                 .try_get("ui.sidebar.git.modified")
                 .or_else(|| theme.try_get("warning"))
                 .or_else(|| theme.try_get("diff.delta")),
-            GitStatus::Untracked => theme
-                .try_get("ui.sidebar.git.untracked")
-                .or_else(|| theme.try_get("comment"))
-                .or_else(|| theme.try_get("ui.text.inactive")),
+            GitStatus::Added | GitStatus::Untracked => theme
+                .try_get("ui.sidebar.git.added")
+                .or_else(|| theme.try_get("ui.sidebar.git.untracked"))
+                .or_else(|| theme.try_get("diff.plus")),
             GitStatus::Deleted => theme
                 .try_get("ui.sidebar.git.deleted")
                 .or_else(|| theme.try_get("error"))
