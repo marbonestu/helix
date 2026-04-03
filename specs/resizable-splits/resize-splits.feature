@@ -68,17 +68,19 @@ Feature: Resize editor splits
       Then the top half grows at the expense of the bottom half at the outer level
       And the vertical sub-split proportions within the top half are unaffected
 
-  Rule: Resize is a no-op when the focused split has no sibling in the requested direction
+  Rule: Resize falls back to the opposite sibling when there is no preferred-side neighbour
 
-    Example: Cannot grow width of the rightmost split
+    Example: Growing the rightmost split takes space from the left sibling
       Given Alex has two vertical splits and focus is on the rightmost split
       When Alex presses "C-w >" to grow width
-      Then the split sizes remain unchanged
+      Then the focused split should be wider than before
+      And the adjacent sibling split should be narrower than before
 
-    Example: Cannot shrink width of the leftmost split
+    Example: Shrinking the leftmost split gives space to the right sibling
       Given Alex has two vertical splits and focus is on the leftmost split
       When Alex presses "C-w <" to shrink width
-      Then the split sizes remain unchanged
+      Then the focused split should be narrower than before
+      And the adjacent sibling split should be wider than before
 
     Example: Resize on a single-split layout does nothing
       Given Alex has only one split open
