@@ -3,6 +3,7 @@ mod file_creation_steps;
 mod file_deletion_steps;
 mod file_open_split_steps;
 mod file_rename_steps;
+mod file_watching_steps;
 mod navigation_steps;
 mod search_steps;
 mod sidebar_steps;

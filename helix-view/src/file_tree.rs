@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use helix_vcs::{DiffProviderRegistry, FileChange};
+use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
+use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
 use tokio::sync::mpsc;
@@ -183,6 +185,11 @@ pub enum FileTreeUpdate {
         path: PathBuf,
         refresh_parent: PathBuf,
     },
+    /// Sent by the filesystem watcher when an external change is detected
+    /// in `dir`. The tree reloads the affected directory's children.
+    ExternalChange {
+        dir: PathBuf,
+    },
 }
 
 pub struct FileTree {
@@ -229,6 +236,10 @@ pub struct FileTree {
     clipboard: Option<ClipboardEntry>,
     /// Transient status message shown in the bottom row when no prompt is active.
     status_message: Option<String>,
+    /// Filesystem watcher that feeds external changes into the update channel.
+    /// Kept alive for the lifetime of the tree; `None` if watching is
+    /// unavailable or has been intentionally disabled (e.g. in unit tests).
+    _watcher: Option<Debouncer<RecommendedWatcher>>,
 }
 
 impl std::fmt::Debug for FileTree {
@@ -267,6 +278,11 @@ impl FileTree {
             depth: 0,
         });
 
+        // Start a debounced filesystem watcher on the root directory.
+        // Events are coalesced with a 300 ms debounce and forwarded to the
+        // update channel so `process_updates()` can reload affected dirs.
+        let watcher = Self::start_watcher(&root, update_tx.clone());
+
         let mut tree = Self {
             root,
             root_id,
@@ -292,6 +308,7 @@ impl FileTree {
             pre_prompt_selected: 0,
             clipboard: None,
             status_message: None,
+            _watcher: watcher,
         };
 
         // Load root children synchronously so the tree is populated on
@@ -336,6 +353,59 @@ impl FileTree {
             pre_prompt_selected: 0,
             clipboard: None,
             status_message: None,
+            _watcher: None,
+        }
+    }
+
+    /// Start a debounced filesystem watcher on `root`, forwarding external
+    /// change events into `tx` as [`FileTreeUpdate::ExternalChange`] messages.
+    ///
+    /// Returns `None` if the platform watcher cannot be initialised — the tree
+    /// continues to work without automatic updates in that case.
+    fn start_watcher(
+        root: &Path,
+        tx: mpsc::Sender<FileTreeUpdate>,
+    ) -> Option<Debouncer<RecommendedWatcher>> {
+        let root_buf = root.to_path_buf();
+        let result = new_debouncer(Duration::from_millis(300), move |res: DebounceEventResult| {
+            let events = match res {
+                Ok(ev) => ev,
+                Err(_) => return,
+            };
+
+            // Collect unique parent directories so we only send one update per dir.
+            let mut dirs: std::collections::HashSet<PathBuf> =
+                std::collections::HashSet::new();
+            for event in events {
+                let dir = if event.path.is_dir() {
+                    event.path.clone()
+                } else {
+                    event.path
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| root_buf.clone())
+                };
+                dirs.insert(dir);
+            }
+
+            for dir in dirs {
+                let _ = tx.blocking_send(FileTreeUpdate::ExternalChange { dir });
+            }
+            helix_event::request_redraw();
+        });
+
+        match result {
+            Ok(mut debouncer) => {
+                if let Err(e) = debouncer.watcher().watch(root, RecursiveMode::Recursive) {
+                    log::warn!("file tree: failed to watch {}: {e}", root.display());
+                    return None;
+                }
+                Some(debouncer)
+            }
+            Err(e) => {
+                log::warn!("file tree: failed to start filesystem watcher: {e}");
+                None
+            }
         }
     }
 
@@ -814,6 +884,27 @@ impl FileTree {
                     }
                     self.pending_reveal = Some(path.clone());
                     self.pending_open = Some(path);
+                }
+                FileTreeUpdate::ExternalChange { dir } => {
+                    // Find the closest loaded ancestor node for this directory
+                    // and trigger a children reload so the tree stays in sync.
+                    let node_id = self.nodes.iter()
+                        .find(|(id, n)| n.loaded && self.node_path(*id) == dir)
+                        .map(|(id, _)| id)
+                        .or_else(|| {
+                            // Fall back to the parent of `dir` if `dir` itself
+                            // isn't a node we track (e.g. a newly created dir).
+                            let parent = dir.parent()?;
+                            self.nodes.iter()
+                                .find(|(id, n)| n.loaded && self.node_path(*id) == parent)
+                                .map(|(id, _)| id)
+                        });
+                    if let Some(id) = node_id {
+                        if let Some(node) = self.nodes.get_mut(id) {
+                            node.loaded = false;
+                        }
+                        self.spawn_load_children(id, config);
+                    }
                 }
             }
         }

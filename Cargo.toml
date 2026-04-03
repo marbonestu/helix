@@ -59,6 +59,7 @@ etcetera = "0.11"
 arc-swap = "1.9"
 cucumber = "0.20"
 criterion = { version = "0.5", features = ["html_reports"] }
+notify-debouncer-mini = "0.4"
 
 [workspace.package]
 version = "25.7.1"

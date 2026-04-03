@@ -42,6 +42,7 @@ futures-util = { version = "0.3", features = ["std", "async-await"], default-fea
 
 slotmap.workspace = true
 ignore = "0.4"
+notify-debouncer-mini = { workspace = true }
 
 chardetng = "1.0"
 
