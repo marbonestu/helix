@@ -25,7 +25,6 @@ pub struct Tree {
 
 #[derive(Debug)]
 struct ZoomState {
-    zoomed_view: ViewId,
     /// Saved weights keyed by container ViewId, restored verbatim on unzoom.
     saved_weights: HashMap<ViewId, Vec<f64>>,
 }
@@ -389,10 +388,7 @@ impl Tree {
             current = parent_id;
         }
 
-        self.zoom_state = Some(ZoomState {
-            zoomed_view: focus,
-            saved_weights,
-        });
+        self.zoom_state = Some(ZoomState { saved_weights });
 
         self.recalculate();
     }
@@ -1243,7 +1239,7 @@ mod test {
         let mut tree = make_tree(180, 80);
         let a = tree.focus;
         add_vsplit(&mut tree);
-        let b = tree.focus;
+        let _b = tree.focus;
 
         // Give a bigger weight to 'a'
         let root = tree.root;
