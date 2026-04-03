@@ -488,7 +488,7 @@ fn main_opens_in_editor(_world: &mut FileTreeWorld) {
 
 #[then("keyboard focus moves to the editor")]
 fn focus_moves_to_editor(_world: &mut FileTreeWorld) {
-    // In live-editor scenarios this is asserted via file_tree_focused.
+    // In live-editor scenarios this is asserted via left_sidebar.focused.
     // At library level, the absence of a panic is sufficient.
 }
 

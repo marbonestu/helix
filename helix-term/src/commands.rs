@@ -554,6 +554,14 @@ impl MappableCommand {
         vsplit_new, "Vertical right split scratch buffer",
         wclose, "Close window",
         wonly, "Close windows except current",
+        grow_width, "Grow split width",
+        shrink_width, "Shrink split width",
+        grow_height, "Grow split height",
+        shrink_height, "Shrink split height",
+        equalize_splits, "Equalize split sizes",
+        toggle_zoom, "Toggle zoom on focused split",
+        grow_sidebar_width, "Grow the sidebar panel width",
+        shrink_sidebar_width, "Shrink the sidebar panel width",
         select_register, "Select register",
         insert_register, "Insert register",
         copy_between_registers, "Copy between two registers",
@@ -3288,17 +3296,17 @@ fn toggle_file_tree(cx: &mut Context) {
             }
         }
     }
-    cx.editor.file_tree_visible = !cx.editor.file_tree_visible;
-    if cx.editor.file_tree_visible {
-        cx.editor.file_tree_focused = true;
+    cx.editor.left_sidebar.visible = !cx.editor.left_sidebar.visible;
+    if cx.editor.left_sidebar.visible {
+        cx.editor.left_sidebar.focused = true;
     } else {
-        cx.editor.file_tree_focused = false;
+        cx.editor.left_sidebar.focused = false;
     }
 }
 
 fn focus_file_tree(cx: &mut Context) {
-    if cx.editor.file_tree_visible {
-        cx.editor.file_tree_focused = !cx.editor.file_tree_focused;
+    if cx.editor.left_sidebar.visible {
+        cx.editor.left_sidebar.focused = !cx.editor.left_sidebar.focused;
     }
 }
 
@@ -3326,8 +3334,8 @@ fn reveal_in_file_tree(cx: &mut Context) {
             }
         }
     }
-    cx.editor.file_tree_visible = true;
-    cx.editor.file_tree_focused = true;
+    cx.editor.left_sidebar.visible = true;
+    cx.editor.left_sidebar.focused = true;
 
     if let Some(ref mut tree) = cx.editor.file_tree {
         tree.reveal_path(&path, &config);
@@ -5897,8 +5905,8 @@ fn rotate_view_reverse(cx: &mut Context) {
 }
 
 fn jump_view_right(cx: &mut Context) {
-    if cx.editor.file_tree_focused {
-        cx.editor.file_tree_focused = false;
+    if cx.editor.left_sidebar.focused {
+        cx.editor.left_sidebar.focused = false;
         return;
     }
     cx.editor.focus_direction(tree::Direction::Right)
@@ -5908,8 +5916,8 @@ fn jump_view_left(cx: &mut Context) {
     let current_view = cx.editor.tree.focus;
     if let Some(id) = cx.editor.tree.find_split_in_direction(current_view, tree::Direction::Left) {
         cx.editor.focus(id);
-    } else if cx.editor.file_tree_visible {
-        cx.editor.file_tree_focused = true;
+    } else if cx.editor.left_sidebar.visible {
+        cx.editor.left_sidebar.focused = true;
     }
 }
 
@@ -6000,6 +6008,50 @@ fn wonly(cx: &mut Context) {
             cx.editor.close(view_id);
         }
     }
+}
+
+fn grow_width(cx: &mut Context) {
+    let count = cx.count() as u16;
+    if cx.editor.left_sidebar.focused {
+        // Sidebar widths are absolute columns; sidebar gets count columns.
+        cx.editor.left_sidebar.grow(count);
+    } else {
+        // Split sizes are proportional weights; 0.2 is the weight delta per step.
+        cx.editor.tree.resize_view(tree::Direction::Right, count as f64 * 0.2);
+    }
+}
+
+fn shrink_width(cx: &mut Context) {
+    let count = cx.count() as u16;
+    if cx.editor.left_sidebar.focused {
+        cx.editor.left_sidebar.shrink(count);
+    } else {
+        cx.editor.tree.resize_view(tree::Direction::Left, count as f64 * 0.2);
+    }
+}
+
+fn grow_height(cx: &mut Context) {
+    cx.editor.tree.resize_view(tree::Direction::Down, cx.count() as f64 * 0.2);
+}
+
+fn shrink_height(cx: &mut Context) {
+    cx.editor.tree.resize_view(tree::Direction::Up, cx.count() as f64 * 0.2);
+}
+
+fn grow_sidebar_width(cx: &mut Context) {
+    cx.editor.left_sidebar.grow(cx.count() as u16);
+}
+
+fn shrink_sidebar_width(cx: &mut Context) {
+    cx.editor.left_sidebar.shrink(cx.count() as u16);
+}
+
+fn equalize_splits(cx: &mut Context) {
+    cx.editor.tree.equalize_splits();
+}
+
+fn toggle_zoom(cx: &mut Context) {
+    cx.editor.tree.toggle_zoom();
 }
 
 fn select_register(cx: &mut Context) {

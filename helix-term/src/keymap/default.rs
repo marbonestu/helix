@@ -194,6 +194,11 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
         "C-u" => page_cursor_half_up,
         "C-d" => page_cursor_half_down,
 
+        "C-right" => grow_width,
+        "C-left" => shrink_width,
+        "C-down" => grow_height,
+        "C-up" => shrink_height,
+
         "C-w" => { "Window"
             "C-w" | "w" => rotate_view,
             "C-s" | "s" => hsplit,
@@ -211,6 +216,12 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "K" => swap_view_up,
             "H" => swap_view_left,
             "J" => swap_view_down,
+            ">" => grow_width,
+            "<" => shrink_width,
+            "+" => grow_height,
+            "-" => shrink_height,
+            "=" => equalize_splits,
+            "z" => toggle_zoom,
             "n" => { "New split scratch buffer"
                 "C-s" | "s" => hsplit_new,
                 "C-v" | "v" => vsplit_new,
@@ -280,6 +291,12 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
                 "J" => swap_view_down,
                 "K" => swap_view_up,
                 "L" => swap_view_right,
+                ">" => grow_width,
+                "<" => shrink_width,
+                "+" => grow_height,
+                "-" => shrink_height,
+                "=" => equalize_splits,
+                "z" => toggle_zoom,
                 "n" => { "New split scratch buffer"
                     "C-s" | "s" => hsplit_new,
                     "C-v" | "v" => vsplit_new,

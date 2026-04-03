@@ -1199,12 +1199,12 @@ impl EditorView {
         } = *event;
 
         // Check if click is in the file tree sidebar area
-        if config.file_tree.width > 0 && cxt.editor.file_tree_visible {
-            let sidebar_width = config.file_tree.width;
+        if cxt.editor.left_sidebar.rendered_width > 0 && cxt.editor.left_sidebar.visible {
+            let sidebar_width = cxt.editor.left_sidebar.rendered_width;
             if column < sidebar_width {
                 match kind {
                     MouseEventKind::Down(MouseButton::Left) => {
-                        cxt.editor.file_tree_focused = true;
+                        cxt.editor.left_sidebar.focused = true;
 
                         // Calculate which node was clicked
                         if let Some(ref mut tree) = cxt.editor.file_tree {
@@ -1248,10 +1248,10 @@ impl EditorView {
                 }
             } else {
                 // Click in editor area: unfocus sidebar
-                if cxt.editor.file_tree_focused
+                if cxt.editor.left_sidebar.focused
                     && matches!(kind, MouseEventKind::Down(MouseButton::Left))
                 {
-                    cxt.editor.file_tree_focused = false;
+                    cxt.editor.left_sidebar.focused = false;
                 }
             }
         }
@@ -1608,6 +1608,30 @@ impl EditorView {
             }
         }
 
+        // If C-w was pressed on the previous keypress, interpret this key as a
+        // window command without passing anything through to the normal keymap.
+        // This prevents C-w from clearing sidebar focus before > / < arrive.
+        if cx.editor.left_sidebar.window_cmd_pending {
+            cx.editor.left_sidebar.window_cmd_pending = false;
+            let count = cx.count() as u16;
+            return match key.code {
+                KeyCode::Char('>') => {
+                    cx.editor.left_sidebar.grow(count);
+                    EventResult::Consumed(None)
+                }
+                KeyCode::Char('<') => {
+                    cx.editor.left_sidebar.shrink(count);
+                    EventResult::Consumed(None)
+                }
+                // Navigation: unfocus the sidebar so the user can follow up with
+                // a normal-mode navigation key to reach the target split.
+                _ => {
+                    cx.editor.left_sidebar.focused = false;
+                    EventResult::Consumed(None)
+                }
+            };
+        }
+
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if let Some(ref mut tree) = cx.editor.file_tree {
@@ -1621,7 +1645,7 @@ impl EditorView {
                 }
                 EventResult::Consumed(None)
             }
-            KeyCode::Char('h') | KeyCode::Left => {
+            KeyCode::Char('h') | KeyCode::Left if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(ref mut tree) = cx.editor.file_tree {
                     if let Some(id) = tree.selected_id() {
                         let node = tree.nodes().get(id);
@@ -1642,7 +1666,7 @@ impl EditorView {
                 EventResult::Consumed(None)
             }
             KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                cx.editor.file_tree_focused = false;
+                cx.editor.left_sidebar.focused = false;
                 EventResult::Consumed(None)
             }
             KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1657,7 +1681,7 @@ impl EditorView {
                     {
                         cx.editor.set_error(format!("{}", e));
                     } else {
-                        cx.editor.file_tree_focused = false;
+                        cx.editor.left_sidebar.focused = false;
                     }
                 }
                 EventResult::Consumed(None)
@@ -1674,12 +1698,12 @@ impl EditorView {
                     {
                         cx.editor.set_error(format!("{}", e));
                     } else {
-                        cx.editor.file_tree_focused = false;
+                        cx.editor.left_sidebar.focused = false;
                     }
                 }
                 EventResult::Consumed(None)
             }
-            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let open_path = if let Some(ref mut tree) = cx.editor.file_tree {
                     if let Some(id) = tree.selected_id() {
                         match tree.nodes().get(id).map(|n| n.kind) {
@@ -1712,18 +1736,18 @@ impl EditorView {
                     {
                         cx.editor.set_error(format!("{}", e));
                     } else {
-                        cx.editor.file_tree_focused = false;
+                        cx.editor.left_sidebar.focused = false;
                     }
                 }
                 EventResult::Consumed(None)
             }
             KeyCode::Char('q') => {
-                cx.editor.file_tree_visible = false;
-                cx.editor.file_tree_focused = false;
+                cx.editor.left_sidebar.visible = false;
+                cx.editor.left_sidebar.focused = false;
                 EventResult::Consumed(None)
             }
             KeyCode::Esc => {
-                cx.editor.file_tree_focused = false;
+                cx.editor.left_sidebar.focused = false;
                 EventResult::Consumed(None)
             }
             // Phase 5: 'R' refreshes the tree (previously 'r')
@@ -1926,22 +1950,40 @@ impl EditorView {
                 }
                 EventResult::Consumed(None)
             }
+            KeyCode::Char('e') => {
+                cx.editor.left_sidebar.toggle_expand();
+                EventResult::Consumed(None)
+            }
             KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                cx.editor.file_tree_focused = false;
-                EventResult::Ignored(None)
+                // Consume C-w and arm the pending flag so the *next* key is
+                // handled as a window command inside the sidebar handler.
+                // This keeps focused=true until we know whether the next key
+                // is a resize (> / <) or a navigation/other command.
+                cx.editor.left_sidebar.window_cmd_pending = true;
+                EventResult::Consumed(None)
             }
             // Pass space through so chord sequences like `space e`, `space f`, etc.
             // work from the file tree.
             KeyCode::Char(' ') if key.modifiers.is_empty() => {
-                cx.editor.file_tree_focused = false;
+                cx.editor.left_sidebar.focused = false;
                 EventResult::Ignored(None)
+            }
+            // C-right / C-left — grow or shrink the sidebar width, mirroring the
+            // same bindings that resize splits when an editor pane is focused.
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                cx.editor.left_sidebar.grow(cx.count() as u16);
+                EventResult::Consumed(None)
+            }
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                cx.editor.left_sidebar.shrink(cx.count() as u16);
+                EventResult::Consumed(None)
             }
             // 's' — grep/search inside the selected directory
             KeyCode::Char('s') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let dir = cx.editor.file_tree.as_ref()
                     .and_then(|t| t.selected_dir_path());
                 if let Some(dir) = dir {
-                    cx.editor.file_tree_focused = false;
+                    cx.editor.left_sidebar.focused = false;
                     commands::global_search_in_dir(cx, dir);
                 }
                 EventResult::Consumed(None)
@@ -2121,9 +2163,11 @@ impl Component for EditorView {
                 cx.editor.status_msg = None;
 
                 // Intercept keys when file tree is focused
-                if cx.editor.file_tree_focused {
+                if cx.editor.left_sidebar.focused {
                     let result = self.handle_file_tree_key(key, &mut cx);
                     if let EventResult::Consumed(_) = &result {
+                        // Clear count so it doesn't leak to the next keystroke.
+                        cx.editor.count = None;
                         // Collect any callbacks pushed by file tree handlers
                         let callbacks = take(&mut cx.callback);
                         let callback = if callbacks.is_empty() {
@@ -2282,14 +2326,17 @@ impl Component for EditorView {
         }
 
         // File tree sidebar — carve out space before resize
-        let sidebar_width = if cx.editor.file_tree_visible {
-            config
-                .file_tree
-                .width
-                .min(editor_area.width.saturating_sub(10) / 3)
+        let sidebar_width = if cx.editor.left_sidebar.visible {
+            if cx.editor.left_sidebar.expanded {
+                // Expanded: fill up to half the available editor area.
+                (editor_area.width / 2).max(cx.editor.left_sidebar.width)
+            } else {
+                cx.editor.left_sidebar.width.min(editor_area.width.saturating_sub(10) / 3)
+            }
         } else {
             0
         };
+        cx.editor.left_sidebar.rendered_width = sidebar_width;
         let sidebar_area = if sidebar_width > 0 {
             let sa = Rect::new(
                 editor_area.x,
@@ -2310,8 +2357,8 @@ impl Component for EditorView {
         // Follow current file: queue a debounced reveal (only when tree
         // is not focused, so user navigation isn't interrupted)
         if config.file_tree.follow_current_file
-            && cx.editor.file_tree_visible
-            && !cx.editor.file_tree_focused
+            && cx.editor.left_sidebar.visible
+            && !cx.editor.left_sidebar.focused
         {
             let current_path = {
                 let (_view, doc) = current!(cx.editor);
@@ -2334,7 +2381,7 @@ impl Component for EditorView {
             if let Err(e) = cx.editor.open(&path, helix_view::editor::Action::Replace) {
                 cx.editor.set_error(format!("{e}"));
             } else {
-                cx.editor.file_tree_focused = false;
+                cx.editor.left_sidebar.focused = false;
             }
         }
 
@@ -2362,7 +2409,7 @@ impl Component for EditorView {
                     sidebar_area,
                     surface,
                     cx.editor,
-                    cx.editor.file_tree_focused,
+                    cx.editor.left_sidebar.focused,
                     &config.file_tree,
                 );
             }

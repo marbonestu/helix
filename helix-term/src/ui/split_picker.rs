@@ -122,7 +122,7 @@ impl Component for SplitPicker {
                     if let Err(e) = cx.editor.open(&path, Action::Replace) {
                         cx.editor.set_error(format!("{e}"));
                     }
-                    cx.editor.file_tree_focused = false;
+                    cx.editor.left_sidebar.focused = false;
                 })));
             }
         }
