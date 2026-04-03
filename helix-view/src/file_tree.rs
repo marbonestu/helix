@@ -109,6 +109,9 @@ pub struct FileNode {
     /// Separate from `expanded` so collapsing preserves loaded children.
     pub loaded: bool,
     pub depth: u16,
+    /// Cached git status for this node. Updated after each git status refresh.
+    /// Avoids O(depth) `node_path` allocations in the per-frame render loop.
+    pub cached_git_status: GitStatus,
 }
 
 /// Describes the active prompt in the file tree bottom row.
@@ -142,6 +145,8 @@ pub enum ClipboardOp {
 #[derive(Debug, Clone)]
 pub struct ClipboardEntry {
     pub path: PathBuf,
+    /// NodeId of the clipped node for O(1) identity checks during render.
+    pub node_id: NodeId,
     pub op: ClipboardOp,
 }
 
@@ -279,6 +284,7 @@ impl FileTree {
             expanded: true,
             loaded: false,
             depth: 0,
+            cached_git_status: GitStatus::Clean,
         });
 
         // Spawn the watcher setup on a blocking thread so it does not delay
@@ -585,6 +591,7 @@ impl FileTree {
                     expanded: false,
                     loaded: false,
                     depth: root_depth + 1,
+                    cached_git_status: GitStatus::Clean,
                 });
                 new_children.push(new_id);
             }
@@ -768,6 +775,7 @@ impl FileTree {
                     expanded: false,
                     loaded: false,
                     depth,
+                    cached_git_status: GitStatus::Clean,
                 });
                 child_ids.push(child_id);
             }
@@ -851,6 +859,7 @@ impl FileTree {
                             expanded,
                             loaded,
                             depth,
+                            cached_git_status: GitStatus::Clean,
                         });
                         child_ids.push(child_id);
                     }
@@ -987,9 +996,20 @@ impl FileTree {
                 ancestor = dir.parent();
             }
         }
+
+        // Populate per-node status cache so render-loop lookups are O(1).
+        let node_ids: Vec<NodeId> = self.nodes.keys().collect();
+        for id in node_ids {
+            let status = self.git_status_for_compute(id);
+            if let Some(node) = self.nodes.get_mut(id) {
+                node.cached_git_status = status;
+            }
+        }
     }
 
-    pub fn git_status_for(&self, id: NodeId) -> GitStatus {
+    /// Compute the git status for a node without using the cache.
+    /// Called during cache rebuild; use `git_status_for` for all other access.
+    fn git_status_for_compute(&self, id: NodeId) -> GitStatus {
         let path = self.node_path(id);
         let node = match self.nodes.get(id) {
             Some(n) => n,
@@ -1020,6 +1040,14 @@ impl FileTree {
                 .copied()
                 .unwrap_or(GitStatus::Clean),
         }
+    }
+
+    /// Returns the cached git status for a node. O(1).
+    pub fn git_status_for(&self, id: NodeId) -> GitStatus {
+        self.nodes
+            .get(id)
+            .map(|n| n.cached_git_status)
+            .unwrap_or(GitStatus::Clean)
     }
 
     /// Rebuild the flat visible list from the tree structure using
@@ -1433,13 +1461,13 @@ impl FileTree {
     /// Copy the node at `id` to the clipboard (does not move the file).
     pub fn yank(&mut self, id: NodeId) {
         let path = self.node_path(id);
-        self.clipboard = Some(ClipboardEntry { path, op: ClipboardOp::Copy });
+        self.clipboard = Some(ClipboardEntry { path, node_id: id, op: ClipboardOp::Copy });
     }
 
     /// Cut the node at `id` into the clipboard (marks it for a move on paste).
     pub fn cut(&mut self, id: NodeId) {
         let path = self.node_path(id);
-        self.clipboard = Some(ClipboardEntry { path, op: ClipboardOp::Cut });
+        self.clipboard = Some(ClipboardEntry { path, node_id: id, op: ClipboardOp::Cut });
     }
 
     pub fn clear_clipboard(&mut self) {
@@ -1750,6 +1778,7 @@ mod tests {
             expanded: true,
             loaded: true,
             depth: 0,
+            cached_git_status: GitStatus::Clean,
         });
 
         let src_id = nodes.insert(FileNode {
@@ -1760,6 +1789,7 @@ mod tests {
             expanded: true,
             loaded: true,
             depth: 1,
+            cached_git_status: GitStatus::Clean,
         });
 
         let main_id = nodes.insert(FileNode {
@@ -1770,6 +1800,7 @@ mod tests {
             expanded: false,
             loaded: false,
             depth: 2,
+            cached_git_status: GitStatus::Clean,
         });
 
         let lib_id = nodes.insert(FileNode {
@@ -1780,6 +1811,7 @@ mod tests {
             expanded: false,
             loaded: false,
             depth: 2,
+            cached_git_status: GitStatus::Clean,
         });
 
         let cargo_id = nodes.insert(FileNode {
@@ -1790,6 +1822,7 @@ mod tests {
             expanded: false,
             loaded: false,
             depth: 1,
+            cached_git_status: GitStatus::Clean,
         });
 
         // Wire up children
@@ -1945,6 +1978,7 @@ mod tests {
             expanded: true,
             loaded: false,
             depth: 0,
+            cached_git_status: GitStatus::Clean,
         });
 
         // Manually call the spawn logic by sending on our tx
@@ -2443,6 +2477,7 @@ mod tests {
             expanded: true,
             loaded: true,
             depth: 0,
+            cached_git_status: GitStatus::Clean,
         });
         let file_id = nodes.insert(FileNode {
             name: "Makefile".into(),
@@ -2452,6 +2487,7 @@ mod tests {
             expanded: false,
             loaded: false,
             depth: 1,
+            cached_git_status: GitStatus::Clean,
         });
         nodes[root_id].children = vec![file_id];
         let mut tree = FileTree::from_nodes(PathBuf::from("/tmp/project"), root_id, nodes);

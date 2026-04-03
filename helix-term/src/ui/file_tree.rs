@@ -205,7 +205,7 @@ pub fn render_file_tree(
 
             // Clipboard tag: " (C)" for yanked, " (X)" for cut
             if let Some(clip) = tree.clipboard() {
-                if tree.node_path(node_id) == clip.path && remaining_after_name >= 4 {
+                if clip.node_id == node_id && remaining_after_name >= 4 {
                     let tag = match clip.op {
                         ClipboardOp::Copy => " (C)",
                         ClipboardOp::Cut => " (X)",
