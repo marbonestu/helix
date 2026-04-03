@@ -4,6 +4,7 @@ pub(crate) mod editor;
 pub(crate) mod file_icons;
 pub(crate) mod file_tree;
 pub(crate) mod flash;
+pub(crate) mod ts_flash;
 pub mod split_picker;
 mod info;
 pub mod lsp;
