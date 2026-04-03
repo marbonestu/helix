@@ -198,6 +198,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
         "C-left" => shrink_width,
         "C-down" => grow_height,
         "C-up" => shrink_height,
+        "C-e" => toggle_reveal_file_tree,
 
         "C-w" => { "Window"
             "C-w" | "w" => rotate_view,

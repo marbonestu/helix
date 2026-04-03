@@ -817,25 +817,39 @@ impl FileTree {
                     };
                     let depth = parent_node.depth + 1;
 
-                    // Remove old children if re-scanning
+                    // Before removing old children, snapshot their state by name
+                    // so directory expansion is preserved across rescans.
                     let old_children: Vec<NodeId> = self
                         .nodes
                         .get(parent)
                         .map(|n| n.children.clone())
                         .unwrap_or_default();
+                    let mut old_state: std::collections::HashMap<String, (bool, bool, Vec<NodeId>)> =
+                        old_children
+                            .iter()
+                            .filter_map(|&id| {
+                                self.nodes.get(id).map(|n| {
+                                    (n.name.clone(), (n.expanded, n.loaded, n.children.clone()))
+                                })
+                            })
+                            .collect();
                     for old_id in old_children {
                         self.nodes.remove(old_id);
                     }
 
                     let mut child_ids = Vec::with_capacity(entries.len());
                     for (name, kind) in entries {
+                        let (expanded, loaded, children) = old_state
+                            .remove(&name)
+                            .filter(|_| kind == NodeKind::Directory)
+                            .unwrap_or((false, false, Vec::new()));
                         let child_id = self.nodes.insert(FileNode {
                             name,
                             kind,
                             parent: Some(parent),
-                            children: Vec::new(),
-                            expanded: false,
-                            loaded: false,
+                            children,
+                            expanded,
+                            loaded,
                             depth,
                         });
                         child_ids.push(child_id);

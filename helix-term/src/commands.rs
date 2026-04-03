@@ -409,6 +409,7 @@ impl MappableCommand {
         toggle_file_tree, "Toggle file tree sidebar",
         focus_file_tree, "Focus file tree sidebar",
         reveal_in_file_tree, "Reveal current file in tree",
+        toggle_reveal_file_tree, "Reveal current file in tree, or return to buffer if tree is focused",
         code_action, "Perform code action",
         buffer_picker, "Open buffer picker",
         jumplist_picker, "Open jumplist picker",
@@ -3340,6 +3341,14 @@ fn reveal_in_file_tree(cx: &mut Context) {
     if let Some(ref mut tree) = cx.editor.file_tree {
         tree.reveal_path(&path, &config);
     }
+}
+
+fn toggle_reveal_file_tree(cx: &mut Context) {
+    if cx.editor.left_sidebar.focused {
+        cx.editor.left_sidebar.focused = false;
+        return;
+    }
+    reveal_in_file_tree(cx);
 }
 
 fn buffer_picker(cx: &mut Context) {

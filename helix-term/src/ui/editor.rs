@@ -31,7 +31,7 @@ use helix_view::{
     keyboard::{KeyCode, KeyModifiers},
     Document, Editor, Theme, View,
 };
-use std::{mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc};
+use std::{mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc, time::Instant};
 
 use tui::{buffer::Buffer as Surface, text::Span};
 
@@ -44,6 +44,8 @@ pub struct EditorView {
     spinners: ProgressSpinners,
     /// Tracks if the terminal window is focused by reaction to terminal focus events
     terminal_focused: bool,
+    /// Tracks the last sidebar click (visible index, time) for double-click detection
+    last_sidebar_click: Option<(usize, Instant)>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +69,7 @@ impl EditorView {
             completion: None,
             spinners: ProgressSpinners::default(),
             terminal_focused: true,
+            last_sidebar_click: None,
         }
     }
 
@@ -1207,23 +1210,79 @@ impl EditorView {
                         cxt.editor.left_sidebar.focused = true;
 
                         // Calculate which node was clicked
-                        if let Some(ref mut tree) = cxt.editor.file_tree {
-                            // Approximate: row offset from top of editor area
-                            let tree_row = row.saturating_sub(
-                                if matches!(config.bufferline,
-                                    helix_view::editor::BufferLine::Always)
-                                    || (matches!(config.bufferline,
-                                        helix_view::editor::BufferLine::Multiple)
-                                        && cxt.editor.documents.len() > 1)
-                                {
-                                    1
+                        let tree_row = row.saturating_sub(
+                            if matches!(config.bufferline,
+                                helix_view::editor::BufferLine::Always)
+                                || (matches!(config.bufferline,
+                                    helix_view::editor::BufferLine::Multiple)
+                                    && cxt.editor.documents.len() > 1)
+                            {
+                                1
+                            } else {
+                                0
+                            },
+                        );
+                        let clicked_idx = cxt.editor.file_tree.as_ref()
+                            .map(|t| t.scroll_offset() + tree_row as usize)
+                            .unwrap_or(0);
+                        let in_bounds = cxt.editor.file_tree.as_ref()
+                            .map(|t| clicked_idx < t.visible().len())
+                            .unwrap_or(false);
+
+                        if in_bounds {
+                            let now = Instant::now();
+                            let is_double = self.last_sidebar_click
+                                .map(|(last_idx, last_time)| {
+                                    last_idx == clicked_idx
+                                        && now.duration_since(last_time).as_millis() < 400
+                                })
+                                .unwrap_or(false);
+
+                            if is_double {
+                                self.last_sidebar_click = None;
+                                // Reuse the same open/toggle logic as the Enter key handler
+                                let open_path = if let Some(ref mut tree) = cxt.editor.file_tree {
+                                    tree.move_to(clicked_idx);
+                                    if let Some(id) = tree.selected_id() {
+                                        match tree.nodes().get(id).map(|n| n.kind) {
+                                            Some(helix_view::file_tree::NodeKind::Directory) => {
+                                                tree.toggle_expand(id, &config.file_tree);
+                                                None
+                                            }
+                                            Some(helix_view::file_tree::NodeKind::File) => {
+                                                Some(tree.node_path(id))
+                                            }
+                                            None => None,
+                                        }
+                                    } else {
+                                        None
+                                    }
                                 } else {
-                                    0
-                                },
-                            );
-                            let clicked_idx = tree.scroll_offset() + tree_row as usize;
-                            if clicked_idx < tree.visible().len() {
-                                tree.move_to(clicked_idx);
+                                    None
+                                };
+                                if let Some(path) = open_path {
+                                    let view_count = cxt.editor.tree.views().count();
+                                    if view_count > 1 {
+                                        if let Some(picker) =
+                                            crate::ui::split_picker::SplitPicker::new(path, cxt.editor)
+                                        {
+                                            cxt.callback.push(Box::new(move |compositor, _cx| {
+                                                compositor.push(Box::new(picker));
+                                            }));
+                                        }
+                                    } else if let Err(e) =
+                                        cxt.editor.open(&path, helix_view::editor::Action::Replace)
+                                    {
+                                        cxt.editor.set_error(format!("{}", e));
+                                    } else {
+                                        cxt.editor.left_sidebar.focused = false;
+                                    }
+                                }
+                            } else {
+                                self.last_sidebar_click = Some((clicked_idx, now));
+                                if let Some(ref mut tree) = cxt.editor.file_tree {
+                                    tree.move_to(clicked_idx);
+                                }
                             }
                         }
                         return EventResult::Consumed(None);
@@ -1667,6 +1726,15 @@ impl EditorView {
             }
             KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 cx.editor.left_sidebar.focused = false;
+                let leftmost = cx
+                    .editor
+                    .tree
+                    .views()
+                    .min_by_key(|(view, _)| view.area.left())
+                    .map(|(view, _)| view.id);
+                if let Some(id) = leftmost {
+                    cx.editor.focus(id);
+                }
                 EventResult::Consumed(None)
             }
             KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1945,9 +2013,7 @@ impl EditorView {
                 EventResult::Consumed(None)
             }
             KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(ref mut tree) = cx.editor.file_tree {
-                    tree.scroll_view_down();
-                }
+                cx.editor.left_sidebar.focused = false;
                 EventResult::Consumed(None)
             }
             KeyCode::Char('e') => {
@@ -2359,6 +2425,7 @@ impl Component for EditorView {
         if config.file_tree.follow_current_file
             && cx.editor.left_sidebar.visible
             && !cx.editor.left_sidebar.focused
+            && self.terminal_focused
         {
             let current_path = {
                 let (_view, doc) = current!(cx.editor);
