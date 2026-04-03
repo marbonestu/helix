@@ -236,9 +236,12 @@ pub struct FileTree {
     clipboard: Option<ClipboardEntry>,
     /// Transient status message shown in the bottom row when no prompt is active.
     status_message: Option<String>,
+    /// Receives the `Debouncer` from the background watcher-init task.
+    /// Polled by `process_updates()`; cleared once the debouncer is stored.
+    watcher_init: Option<std::sync::mpsc::Receiver<Debouncer<RecommendedWatcher>>>,
     /// Filesystem watcher that feeds external changes into the update channel.
-    /// Kept alive for the lifetime of the tree; `None` if watching is
-    /// unavailable or has been intentionally disabled (e.g. in unit tests).
+    /// Populated on the first `process_updates()` after the background init
+    /// task completes. `None` if watching is unavailable or disabled.
     _watcher: Option<Debouncer<RecommendedWatcher>>,
 }
 
@@ -278,10 +281,18 @@ impl FileTree {
             depth: 0,
         });
 
-        // Start a debounced filesystem watcher on the root directory.
-        // Events are coalesced with a 300 ms debounce and forwarded to the
-        // update channel so `process_updates()` can reload affected dirs.
-        let watcher = Self::start_watcher(&root, update_tx.clone());
+        // Spawn the watcher setup on a blocking thread so it does not delay
+        // `new()`. Recursive inotify/FSEvents setup on a large workspace can
+        // take seconds; we let the render loop pick up the Debouncer via
+        // `watcher_init` once it is ready.
+        let (watcher_done_tx, watcher_done_rx) = std::sync::mpsc::channel();
+        let root_for_watcher = root.clone();
+        let events_tx = update_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Some(debouncer) = Self::start_watcher(&root_for_watcher, events_tx) {
+                let _ = watcher_done_tx.send(debouncer);
+            }
+        });
 
         let mut tree = Self {
             root,
@@ -308,7 +319,8 @@ impl FileTree {
             pre_prompt_selected: 0,
             clipboard: None,
             status_message: None,
-            _watcher: watcher,
+            watcher_init: Some(watcher_done_rx),
+            _watcher: None,
         };
 
         // Load root children synchronously so the tree is populated on
@@ -353,6 +365,7 @@ impl FileTree {
             pre_prompt_selected: 0,
             clipboard: None,
             status_message: None,
+            watcher_init: None,
             _watcher: None,
         }
     }
@@ -779,6 +792,16 @@ impl FileTree {
         config: &FileTreeConfig,
         diff_providers: Option<&DiffProviderRegistry>,
     ) {
+        // Pick up the Debouncer from the background watcher-init task if ready.
+        if self._watcher.is_none() {
+            if let Some(rx) = &self.watcher_init {
+                if let Ok(debouncer) = rx.try_recv() {
+                    self._watcher = Some(debouncer);
+                    self.watcher_init = None;
+                }
+            }
+        }
+
         // Check debounce timers
         if let Some(providers) = diff_providers {
             self.check_git_refresh_timer(providers);
