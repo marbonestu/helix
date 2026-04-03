@@ -1,5 +1,4 @@
 use helix_core::{
-    graphemes::next_grapheme_boundary,
     movement::Direction,
     text_annotations::Overlay,
     Range, Selection, Tendril,
@@ -29,28 +28,34 @@ struct LabeledNode {
 /// Interactive picker that shows jump labels on all visible treesitter objects
 /// of a given type (function, class, parameter, …) within the current viewport.
 ///
-/// On activation every visible object of `object_name` in the given direction
-/// from the cursor is labelled with a letter from the configured alphabet.
-/// Pressing a label character jumps the cursor to the start of that node.
-/// Escape restores the original cursor position.
+/// On activation the calling command immediately jumps to the first (nearest)
+/// match, then pushes this picker so the user can refine by pressing a label.
+/// Pressing a label character selects the full span of the corresponding node,
+/// mirroring the behaviour of `goto_next/prev_*` commands. Escape restores the
+/// cursor to where it was before `]f` (or equivalent) was pressed.
 ///
-/// The picker is fully constructed with its labels assigned — there is no
-/// incremental search phase. A single visible node triggers an immediate jump
-/// without entering the picker at all (handled by the calling command).
+/// Jumplist management is handled once by the calling command at activation
+/// time; `jump_to` does not push an additional entry.
 pub struct TsFlashPicker {
     labeled: Vec<LabeledNode>,
+    /// Navigation direction; determines which end of the node range the cursor
+    /// is placed on (Forward → cursor at end, Backward → cursor at start),
+    /// matching `goto_ts_object_impl` behaviour.
+    direction: Direction,
     snapshot: Selection,
     view_id: ViewId,
     doc_id: DocumentId,
 }
 
 impl TsFlashPicker {
-    /// Build the picker from a pre-computed list of node ranges. Labels are
-    /// assigned from `alphabet` in the order the ranges are supplied (nearest
-    /// first for both directions).
+    /// Build the picker from a pre-computed list of node ranges.
+    ///
+    /// Labels are assigned from `alphabet` in the order the ranges are supplied
+    /// (nearest first for both directions).
     pub fn new(
         nodes: Vec<Range>,
         alphabet: Vec<char>,
+        direction: Direction,
         view_id: ViewId,
         doc_id: DocumentId,
         snapshot: Selection,
@@ -67,12 +72,16 @@ impl TsFlashPicker {
 
         Self {
             labeled,
+            direction,
             snapshot,
             view_id,
             doc_id,
         }
     }
 
+    /// Place label overlays on the document so the user can see which key to
+    /// press for each visible node. Call this once after construction and
+    /// before pushing the picker onto the compositor stack.
     pub fn show_labels(&self, editor: &mut Editor) {
         let mut overlays: Vec<Overlay> = self
             .labeled
@@ -93,24 +102,15 @@ impl TsFlashPicker {
         self.labeled.iter().position(|ln| ln.label == ch)
     }
 
+    /// Jump to the labeled node at `idx`, selecting its full span with the
+    /// direction applied by `goto_ts_object_impl`. Does **not** push a new
+    /// jumplist entry — the calling command already did that at activation.
     fn jump_to(&self, idx: usize, editor: &mut Editor) {
         let Some(ln) = self.labeled.get(idx) else {
             return;
         };
 
-        let target_pos = ln.range.from();
-        let doc = &editor.documents[&self.doc_id];
-        let text = doc.text().slice(..);
-        let target_end = next_grapheme_boundary(text, target_pos);
-
-        // Record the pre-jump position in the jumplist.
-        let jump = (doc.id(), doc.selection(self.view_id).clone());
-        let view = editor.tree.get_mut(self.view_id);
-        view.jumps.push(jump);
-
-        let range = Range::new(target_pos, target_end)
-            .with_direction(Direction::Forward);
-
+        let range = ln.range.with_direction(self.direction);
         let doc = editor.documents.get_mut(&self.doc_id).unwrap();
         doc.set_selection(self.view_id, range.into());
     }
@@ -155,8 +155,6 @@ impl Component for TsFlashPicker {
                 ..
             } => {
                 if let Some(idx) = self.find_label(ch) {
-                    // Clean up overlays before jumping so the jump does not
-                    // inadvertently restore the snapshot selection.
                     let doc = cx.editor.documents.get_mut(&self.doc_id).unwrap();
                     doc.remove_jump_labels(self.view_id);
                     cx.editor.set_status("");

@@ -6296,10 +6296,10 @@ fn goto_prev_entry(cx: &mut Context) {
 /// `object` in the given `direction` within the current viewport.
 ///
 /// - If no objects are found, sets the "No matches" status and returns.
-/// - If exactly one object is visible, jumps directly without showing the
-///   picker (auto-jump, matches flash behaviour).
-/// - Otherwise, pushes a [`TsFlashPicker`] layer so the user can pick by
-///   pressing the displayed label character.
+/// - Otherwise: records the current position in the jumplist, immediately
+///   jumps to the first (nearest) match (mirroring the single-step behaviour
+///   of `goto_next_*`), then — if more than one match exists — pushes a
+///   [`TsFlashPicker`] so the user can refine by pressing a label.
 fn ts_flash_object_impl(cx: &mut Context, object: &'static str, dir: Direction) {
     let alphabet: Vec<char> = {
         let config = cx.editor.config();
@@ -6351,20 +6351,23 @@ fn ts_flash_object_impl(cx: &mut Context, object: &'static str, dir: Direction) 
         return;
     }
 
-    if nodes.len() == 1 {
-        let target_pos = nodes[0].from();
+    // Record the pre-jump position once for the whole activation.
+    // TsFlashPicker::jump_to does NOT push additional jumplist entries.
+    {
         let (view, doc) = current!(cx.editor);
         push_jump(view, doc);
-        let text = doc.text().slice(..);
-        let target_end = next_grapheme_boundary(text, target_pos);
-        let range = Range::new(target_pos, target_end).with_direction(Direction::Forward);
-        doc.set_selection(view_id, range.into());
+        let first_range = nodes[0].with_direction(dir);
+        doc.set_selection(view_id, first_range.into());
+    }
+
+    if nodes.len() == 1 {
         return;
     }
 
     let picker = crate::ui::ts_flash::TsFlashPicker::new(
         nodes,
         alphabet,
+        dir,
         view_id,
         doc_id,
         snapshot,

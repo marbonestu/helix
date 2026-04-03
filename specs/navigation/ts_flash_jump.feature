@@ -2,21 +2,28 @@
 Feature: Treesitter flash jump navigation
 
   Alex the developer can jump to any visible treesitter object of a specific
-  type by pressing the corresponding bracket navigation key. Labels appear on
-  all visible objects of that type within the viewport, filtered by direction,
-  so Alex can jump directly to any target without repeatedly pressing ]f.
+  type by pressing the corresponding bracket navigation key. On activation the
+  cursor immediately moves to the first (nearest) object, labels appear on all
+  visible objects of that type, and Alex can press a label to jump to any
+  other target. The full span of the object is selected, matching the behaviour
+  of the existing goto_next/prev_* commands.
 
-  Rule: ]f labels all visible functions at or after the cursor in the viewport
+  Rule: ]f immediately jumps to the first visible function and labels the rest
 
-    Example: Two visible functions both receive labels; typing the second label jumps there
+    Example: ]f moves the cursor to the first function right away
+      Given the Rust buffer contains "fn foo() {}\nfn bar() {}\n"
+      When Alex presses "]f"
+      Then the cursor is at position 10
+
+    Example: Typing a label after ]f jumps to the labelled function
       Given the Rust buffer contains "fn foo() {}\nfn bar() {}\n"
       When Alex presses "]f" and types "b"
-      Then the cursor is at position 12
+      Then the cursor is at position 22
 
     Example: Single visible function auto-jumps without requiring a label keystroke
       Given the Rust buffer contains "fn only_one() {}\n"
       When Alex presses "]f"
-      Then the cursor is at position 0
+      Then the cursor is at position 15
 
     Example: No visible functions shows "No matches" and leaves the cursor in place
       Given the Rust buffer contains "struct Foo {}\n"
@@ -29,21 +36,21 @@ Feature: Treesitter flash jump navigation
     Example: ]f labels only functions; struct definitions are not labelled
       Given the Rust buffer contains "struct Foo {}\nfn bar() {}\n"
       When Alex presses "]f" and types "a"
-      Then the cursor is at position 14
+      Then the cursor is at position 24
 
     Example: ]t labels only type definitions; functions are not labelled
       Given the Rust buffer contains "struct Foo {}\nfn bar() {}\n"
       When Alex presses "]t" and types "a"
-      Then the cursor is at position 0
+      Then the cursor is at position 12
 
     Example: ]a labels only parameters; function keyword is not labelled
       Given the Rust buffer contains "fn foo(x: i32, y: i32) {}\n"
       When Alex presses "]a" and types "b"
-      Then the cursor is at position 15
+      Then the cursor is at position 20
 
-  Rule: Escape cancels the ts-flash jump and restores the original cursor position
+  Rule: Escape cancels and restores the cursor to where it was before ]f
 
-    Example: Escape during label selection returns the cursor to its original position
+    Example: Escape returns the cursor to its original position
       Given the Rust buffer contains "fn foo() {}\nfn bar() {}\n"
       When Alex presses "]f", types "b", then presses Escape
       Then the cursor is at the start of the buffer
