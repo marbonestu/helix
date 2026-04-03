@@ -1199,8 +1199,8 @@ impl EditorView {
         } = *event;
 
         // Check if click is in the file tree sidebar area
-        if cxt.editor.left_sidebar.width > 0 && cxt.editor.left_sidebar.visible {
-            let sidebar_width = cxt.editor.left_sidebar.width;
+        if cxt.editor.left_sidebar.rendered_width > 0 && cxt.editor.left_sidebar.visible {
+            let sidebar_width = cxt.editor.left_sidebar.rendered_width;
             if column < sidebar_width {
                 match kind {
                     MouseEventKind::Down(MouseButton::Left) => {
@@ -1952,6 +1952,10 @@ impl EditorView {
                 }
                 EventResult::Consumed(None)
             }
+            KeyCode::Char('e') => {
+                cx.editor.left_sidebar.toggle_expand();
+                EventResult::Consumed(None)
+            }
             KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Consume C-w and arm the pending flag so the *next* key is
                 // handled as a window command inside the sidebar handler.
@@ -2325,10 +2329,16 @@ impl Component for EditorView {
 
         // File tree sidebar — carve out space before resize
         let sidebar_width = if cx.editor.left_sidebar.visible {
-            cx.editor.left_sidebar.width.min(editor_area.width.saturating_sub(10) / 3)
+            if cx.editor.left_sidebar.expanded {
+                // Expanded: fill up to half the available editor area.
+                (editor_area.width / 2).max(cx.editor.left_sidebar.width)
+            } else {
+                cx.editor.left_sidebar.width.min(editor_area.width.saturating_sub(10) / 3)
+            }
         } else {
             0
         };
+        cx.editor.left_sidebar.rendered_width = sidebar_width;
         let sidebar_area = if sidebar_width > 0 {
             let sa = Rect::new(
                 editor_area.x,
