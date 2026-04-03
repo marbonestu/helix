@@ -418,6 +418,139 @@ impl FileTree {
         }
     }
 
+    /// Synchronously expand a directory, loading its children immediately.
+    /// Unlike [`toggle_expand`], this does not spawn a background task, making
+    /// it suitable for test contexts where async child loading is not available.
+    pub fn expand_sync(&mut self, id: NodeId, config: &FileTreeConfig) {
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+        if node.kind != NodeKind::Directory {
+            return;
+        }
+        if !node.expanded {
+            if let Some(n) = self.nodes.get_mut(id) {
+                n.expanded = true;
+                self.visible_dirty = true;
+            }
+        }
+        if !self.nodes.get(id).map(|n| n.loaded).unwrap_or(false) {
+            self.load_children_sync(id, config);
+        }
+        self.rebuild_visible();
+    }
+
+    /// Remove a node and all its descendants from the slotmap.
+    fn remove_subtree(&mut self, id: NodeId) {
+        let children = self.nodes.get(id).map(|n| n.children.clone()).unwrap_or_default();
+        for child in children {
+            self.remove_subtree(child);
+        }
+        self.nodes.remove(id);
+    }
+
+    /// Synchronously re-scan all expanded directories, replacing stale node
+    /// entries with fresh data from disk. Use in test contexts instead of
+    /// [`refresh`] (which is async).
+    ///
+    /// Root is refreshed with a merge strategy: existing child nodes whose
+    /// names still exist on disk are kept (preserving expand state), new
+    /// on-disk entries get fresh nodes, and deleted entries are pruned.
+    /// Non-root expanded directories are fully replaced.
+    pub fn refresh_sync(&mut self, config: &FileTreeConfig) {
+        // Merge-refresh root so that:
+        //   • Existing children whose names still exist on disk are kept
+        //     (their NodeIds and expand state are preserved).
+        //   • Children that were deleted on disk are removed (with their subtrees).
+        //   • Newly created on-disk entries get fresh child nodes.
+        let root_id = self.root_id;
+        let root_path = self.root.clone();
+        let root_depth = self.nodes.get(root_id).map(|n| n.depth).unwrap_or(0);
+
+        // Build a name→NodeId map of current root children.
+        let old_by_name: std::collections::HashMap<String, NodeId> = self
+            .nodes
+            .get(root_id)
+            .map(|n| {
+                n.children
+                    .iter()
+                    .filter_map(|&id| {
+                        self.nodes.get(id).map(|c| (c.name.clone(), id))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Read fresh entries from disk.
+        let fresh_entries = self.read_dir_entries(&root_path, config);
+
+        // Build the new children list: reuse existing nodes or create new ones.
+        let mut new_children: Vec<NodeId> = Vec::new();
+        let mut seen_names = std::collections::HashSet::new();
+        for (name, kind) in &fresh_entries {
+            seen_names.insert(name.clone());
+            if let Some(&existing_id) = old_by_name.get(name) {
+                new_children.push(existing_id);
+            } else {
+                let new_id = self.nodes.insert(FileNode {
+                    name: name.clone(),
+                    kind: *kind,
+                    parent: Some(root_id),
+                    children: Vec::new(),
+                    expanded: false,
+                    loaded: false,
+                    depth: root_depth + 1,
+                });
+                new_children.push(new_id);
+            }
+        }
+
+        // Sort: directories before files, then alphabetically.
+        new_children.sort_by(|&a, &b| {
+            let na = &self.nodes[a];
+            let nb = &self.nodes[b];
+            na.kind.cmp(&nb.kind).then(na.name.cmp(&nb.name))
+        });
+
+        // Remove subtrees for old children that are no longer on disk.
+        for (name, &old_id) in &old_by_name {
+            if !seen_names.contains(name) {
+                self.remove_subtree(old_id);
+            }
+        }
+
+        if let Some(root) = self.nodes.get_mut(root_id) {
+            root.children = new_children;
+            root.loaded = true;
+        }
+
+        // Re-scan all non-root expanded directories with a full replace.
+        let expanded_dirs: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.kind == NodeKind::Directory && n.expanded && n.parent.is_some())
+            .map(|(id, _)| id)
+            .collect();
+
+        for &dir_id in &expanded_dirs {
+            let old_children: Vec<NodeId> = self
+                .nodes
+                .get(dir_id)
+                .map(|n| n.children.clone())
+                .unwrap_or_default();
+            for child_id in old_children {
+                self.remove_subtree(child_id);
+            }
+            if let Some(node) = self.nodes.get_mut(dir_id) {
+                node.children.clear();
+                node.loaded = false;
+            }
+            self.load_children_sync(dir_id, config);
+        }
+
+        self.rebuild_visible();
+    }
+
     /// Spawn a background task to load directory children using
     /// `ignore::WalkBuilder` with the same configuration as the file picker.
     fn spawn_load_children(&self, node_id: NodeId, config: &FileTreeConfig) {
@@ -477,6 +610,37 @@ impl FileTree {
             });
             helix_event::request_redraw();
         });
+    }
+
+    /// Read one level of a directory's children from disk, returning
+    /// `(name, kind)` pairs without modifying the node graph.
+    fn read_dir_entries(&self, path: &std::path::Path, config: &FileTreeConfig) -> Vec<(String, NodeKind)> {
+        let walker = ignore::WalkBuilder::new(path)
+            .hidden(!config.hidden)
+            .git_ignore(config.git_ignore)
+            .follow_links(config.follow_symlinks)
+            .max_depth(Some(1))
+            .sort_by_file_name(|a, b| a.cmp(b))
+            .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
+            .add_custom_ignore_filename(".helix/ignore")
+            .build();
+
+        let mut entries = Vec::new();
+        for result in walker {
+            if let Ok(entry) = result {
+                if entry.path() == path {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().to_string();
+                let kind = if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                    NodeKind::Directory
+                } else {
+                    NodeKind::File
+                };
+                entries.push((name, kind));
+            }
+        }
+        entries
     }
 
     /// Synchronously load one level of directory children. Used for the
@@ -1270,6 +1434,53 @@ impl FileTree {
                 self.nodes
                     .get(cid)
                     .map(|n| n.name == *name)
+                    .unwrap_or(false)
+            }) {
+                Some(&child_id) => current_id = child_id,
+                None => return,
+            }
+        }
+
+        self.pending_reveal = None;
+        self.visible_dirty = true;
+        self.rebuild_visible();
+        if let Some(pos) = self.visible.iter().position(|&id| id == current_id) {
+            self.selected = pos;
+            self.ensure_selected_visible();
+        }
+    }
+
+    /// Synchronous counterpart to [`reveal_path`] for use in test contexts.
+    ///
+    /// Loads directories along the path synchronously (via [`load_children_sync`])
+    /// instead of spawning background tasks, so the selection is updated immediately.
+    pub fn reveal_path_sync(&mut self, path: &Path, config: &FileTreeConfig) {
+        let relative = match path.strip_prefix(&self.root) {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+
+        let mut current_id = self.root_id;
+
+        for component in relative.components() {
+            let name = component.as_os_str().to_string_lossy().to_string();
+
+            if !self.nodes.get(current_id).map(|n| n.loaded).unwrap_or(false) {
+                self.load_children_sync(current_id, config);
+            }
+            if let Some(n) = self.nodes.get_mut(current_id) {
+                n.expanded = true;
+            }
+
+            let children = self
+                .nodes
+                .get(current_id)
+                .map(|n| n.children.clone())
+                .unwrap_or_default();
+            match children.iter().find(|&&cid| {
+                self.nodes
+                    .get(cid)
+                    .map(|n| n.name == name)
                     .unwrap_or(false)
             }) {
                 Some(&child_id) => current_id = child_id,

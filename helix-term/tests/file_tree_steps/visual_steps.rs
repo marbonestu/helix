@@ -30,9 +30,13 @@ fn main_rs_modified(world: &mut FileTreeWorld) {
 
 #[given("new_file.rs has never been committed")]
 fn new_file_untracked(world: &mut FileTreeWorld) {
-    // Create the file on disk so the tree can find it.
     let root = world.workspace_dir.path().to_path_buf();
     std::fs::write(root.join("new_file.rs"), "").unwrap();
+    // Refresh the tree so the new file appears as a node before we set its status.
+    if let Some(tree) = world.tree.as_mut() {
+        let config = world.tree_config.clone();
+        tree.refresh_sync(&config);
+    }
     inject_git_status(world, "new_file.rs", GitStatus::Untracked);
 }
 
@@ -45,6 +49,11 @@ fn lib_rs_conflict(world: &mut FileTreeWorld) {
 fn old_rs_deleted(world: &mut FileTreeWorld) {
     let root = world.workspace_dir.path().to_path_buf();
     std::fs::write(root.join("old.rs"), "").unwrap();
+    // Refresh the tree so old.rs appears as a node before we set its status.
+    if let Some(tree) = world.tree.as_mut() {
+        let config = world.tree_config.clone();
+        tree.refresh_sync(&config);
+    }
     inject_git_status(world, "old.rs", GitStatus::Deleted);
 }
 
@@ -174,13 +183,11 @@ fn alex_looks_directory_row(_world: &mut FileTreeWorld) {}
 
 #[when("enough time passes for the follow debounce")]
 fn follow_debounce_elapsed(world: &mut FileTreeWorld) {
-    // Simulate a follow request for src/lib.rs and process immediately.
     let root = world.workspace_dir.path().to_path_buf();
     let target = root.join("src/lib.rs");
     let config = world.tree_config.clone();
     if let Some(tree) = world.tree.as_mut() {
-        // Use reveal_path directly (bypasses the debounce timer).
-        tree.reveal_path(&target, &config);
+        tree.reveal_path_sync(&target, &config);
     }
 }
 
@@ -193,7 +200,7 @@ fn alex_switches_to_integration(world: &mut FileTreeWorld) {
     let target = root.join("tests/integration.rs");
     let config = world.tree_config.clone();
     if let Some(tree) = world.tree.as_mut() {
-        tree.reveal_path(&target, &config);
+        tree.reveal_path_sync(&target, &config);
     }
 }
 
@@ -382,7 +389,7 @@ fn inject_git_status(world: &mut FileTreeWorld, relative_path: &str, status: Git
     let abs_path = root.join(relative_path);
     let tree = world.tree.as_mut().expect("no FileTree");
     let tx = tree.update_tx();
-    let _ = tx.blocking_send(FileTreeUpdate::GitStatus(vec![(abs_path, status)]));
+    let _ = tx.try_send(FileTreeUpdate::GitStatus(vec![(abs_path, status)]));
     // Drain the channel synchronously.
     let config = world.tree_config.clone();
     tree.process_updates(&config, None);
@@ -390,7 +397,19 @@ fn inject_git_status(world: &mut FileTreeWorld, relative_path: &str, status: Git
 
 fn assert_node_git_status(world: &mut FileTreeWorld, node_name: &str, expected: GitStatus) {
     let config = world.tree_config.clone();
+
+    // Expand all top-level directories so their children are loaded.
     let tree = world.tree.as_mut().expect("no FileTree");
+    let dir_ids: Vec<_> = tree
+        .nodes()
+        .iter()
+        .filter(|(_, n)| n.kind == helix_view::file_tree::NodeKind::Directory && n.parent.is_some())
+        .map(|(id, _)| id)
+        .collect();
+    for id in dir_ids {
+        tree.expand_sync(id, &config);
+    }
+
     tree.process_updates(&config, None);
 
     let id = tree

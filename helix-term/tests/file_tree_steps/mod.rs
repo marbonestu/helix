@@ -1,3 +1,7 @@
+mod file_clipboard_steps;
+mod file_creation_steps;
+mod file_deletion_steps;
+mod file_rename_steps;
 mod navigation_steps;
 mod search_steps;
 mod sidebar_steps;
@@ -54,13 +58,21 @@ impl std::fmt::Debug for FileTreeWorld {
 
 impl FileTreeWorld {
     async fn init() -> Result<Self, anyhow::Error> {
-        let workspace_dir = tempfile::tempdir()?;
+        let workspace_dir = tempfile::Builder::new()
+            .prefix("helix-filetree-test-")
+            .tempdir()?;
         std::fs::create_dir_all(workspace_dir.path().join(".helix"))?;
 
         Ok(Self {
             workspace_dir,
             tree: None,
-            tree_config: FileTreeConfig::default(),
+            tree_config: FileTreeConfig {
+                // Hide dotfiles so the predictable project structure
+                // (src/, tests/, archive/, README.md, Cargo.toml) is the only
+                // thing visible in the tree during tests.
+                hidden: false,
+                ..FileTreeConfig::default()
+            },
             app: None,
             helix_config: test_config_no_lsp(),
             pending_files: Vec::new(),

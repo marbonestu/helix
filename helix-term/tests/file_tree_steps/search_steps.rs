@@ -20,31 +20,19 @@ fn project_tree_contains_nodes(world: &mut FileTreeWorld) {
         world.create_project_structure();
         world.init_tree();
     }
-    // Expand src/ so all nodes are visible
+    // Expand src/ and tests/ synchronously so all nodes are immediately visible.
     let config = world.tree_config.clone();
     let tree = world.tree.as_mut().expect("no FileTree");
-    let src_id = tree
-        .nodes()
-        .iter()
-        .find(|(_, n)| n.name == "src")
-        .map(|(id, _)| id);
-    if let Some(id) = src_id {
-        if !tree.nodes()[id].expanded {
-            tree.toggle_expand(id, &config);
+    for name in ["src", "tests"] {
+        let id = tree
+            .nodes()
+            .iter()
+            .find(|(_, n)| n.name == name)
+            .map(|(id, _)| id);
+        if let Some(id) = id {
+            tree.expand_sync(id, &config);
         }
     }
-    let tests_id = tree
-        .nodes()
-        .iter()
-        .find(|(_, n)| n.name == "tests")
-        .map(|(id, _)| id);
-    if let Some(id) = tests_id {
-        if !tree.nodes()[id].expanded {
-            tree.toggle_expand(id, &config);
-        }
-    }
-    // Rebuild the visible list after toggling directories.
-    tree.process_updates(&config, None);
 }
 
 #[given("no search is active")]
@@ -122,10 +110,9 @@ fn selection_on_cargo_before_search(world: &mut FileTreeWorld) {
     tree.search_start();
 }
 
-#[given(expr = "the selection is on main.rs (first \"r\" match)")]
+#[given(regex = r#"the selection is on main\.rs \(first "r" match\)"#)]
 fn selection_on_main_rs(_world: &mut FileTreeWorld) {
-    // The search_push for "r" already jumped to the first match (main.rs).
-    // This step is a description, no further action required.
+    // Descriptive step: the prior search_push for "r" landed on the first match.
 }
 
 #[given(expr = "the selection is on lib.rs")]
@@ -139,7 +126,7 @@ fn selection_on_lib_rs(world: &mut FileTreeWorld) {
     }
 }
 
-#[given(expr = "main.rs is currently selected (first match)")]
+#[given("main.rs is currently selected")]
 fn main_rs_currently_selected(world: &mut FileTreeWorld) {
     let tree = world.tree.as_mut().expect("no FileTree");
     let pos = tree.visible().iter().position(|&id| {
@@ -161,7 +148,7 @@ fn lib_rs_currently_selected(world: &mut FileTreeWorld) {
     }
 }
 
-#[given(expr = "integration.rs is currently selected (last match)")]
+#[given("integration.rs is currently selected")]
 fn integration_rs_currently_selected(world: &mut FileTreeWorld) {
     let tree = world.tree.as_mut().expect("no FileTree");
     let pos = tree.visible().iter().position(|&id| {
@@ -231,6 +218,20 @@ fn search_mode_no_longer_active_given(world: &mut FileTreeWorld) {
 // When
 // ---------------------------------------------------------------------------
 
+#[when("Alex presses y")]
+fn alex_presses_y(world: &mut FileTreeWorld) {
+    use helix_view::file_tree::PromptMode;
+    let mode = world.tree.as_ref().expect("no FileTree").prompt_mode().clone();
+    match mode {
+        PromptMode::DeleteConfirm { .. } => {
+            super::file_deletion_steps::alex_presses_y_confirm(world);
+        }
+        _ => {
+            super::file_clipboard_steps::alex_presses_y(world);
+        }
+    }
+}
+
 #[when("Alex presses /")]
 fn alex_presses_slash(world: &mut FileTreeWorld) {
     let tree = world.tree.as_mut().expect("no FileTree");
@@ -247,20 +248,52 @@ fn alex_types(world: &mut FileTreeWorld, text: String) {
 
 #[when("Alex presses Backspace")]
 fn alex_presses_backspace(world: &mut FileTreeWorld) {
+    use helix_view::file_tree::PromptMode;
     let tree = world.tree.as_mut().expect("no FileTree");
-    tree.search_pop();
+    match tree.prompt_mode() {
+        PromptMode::Search => tree.search_pop(),
+        PromptMode::None => {}
+        _ => tree.prompt_pop(),
+    }
 }
 
 #[when("Alex presses Enter")]
 fn alex_presses_enter_search(world: &mut FileTreeWorld) {
-    let tree = world.tree.as_mut().expect("no FileTree");
-    tree.search_confirm();
+    use helix_view::file_tree::PromptMode;
+    let mode = world.tree.as_ref().expect("no FileTree").prompt_mode().clone();
+    match mode {
+        PromptMode::Search => {
+            world.tree.as_mut().expect("no FileTree").search_confirm();
+        }
+        PromptMode::Rename(_) => {
+            super::file_rename_steps::alex_presses_enter(world);
+        }
+        PromptMode::Duplicate(_) => {
+            super::file_clipboard_steps::alex_presses_enter(world);
+        }
+        PromptMode::None => {
+            // Record selected node for navigation assertions
+            world.captured_node_name = world
+                .tree
+                .as_ref()
+                .and_then(|t| t.selected_node())
+                .map(|n| n.name.clone());
+        }
+        _ => {
+            super::file_creation_steps::alex_presses_enter(world);
+        }
+    }
 }
 
 #[when("Alex presses Escape")]
 fn alex_presses_escape_search(world: &mut FileTreeWorld) {
+    use helix_view::file_tree::PromptMode;
     let tree = world.tree.as_mut().expect("no FileTree");
-    tree.search_cancel();
+    match tree.prompt_mode() {
+        PromptMode::Search => tree.search_cancel(),
+        PromptMode::None => {}
+        _ => tree.prompt_cancel(),
+    }
 }
 
 #[when("Alex presses ctrl-n")]
@@ -277,8 +310,12 @@ fn alex_presses_ctrl_p(world: &mut FileTreeWorld) {
 
 #[when("Alex presses n")]
 fn alex_presses_n(world: &mut FileTreeWorld) {
+    use helix_view::file_tree::PromptMode;
     let tree = world.tree.as_mut().expect("no FileTree");
-    tree.search_next();
+    match tree.prompt_mode() {
+        PromptMode::Search | PromptMode::None => tree.search_next(),
+        _ => tree.prompt_cancel(), // 'n' cancels delete confirmation
+    }
 }
 
 #[when("Alex presses N")]
@@ -457,7 +494,18 @@ fn selection_wraps_to_main(world: &mut FileTreeWorld) {
     assert_eq!(name, "main.rs", "expected wrap to 'main.rs' but was '{name}'");
 }
 
-#[then(expr = "the selection wraps to integration.rs (last match)")]
+#[then("the selection wraps to lib.rs")]
+fn selection_wraps_to_lib(world: &mut FileTreeWorld) {
+    let name = world
+        .tree
+        .as_ref()
+        .and_then(|t| t.selected_node())
+        .map(|n| n.name.as_str())
+        .unwrap_or("");
+    assert_eq!(name, "lib.rs", "expected wrap to 'lib.rs' but was '{name}'");
+}
+
+#[then("the selection wraps to integration.rs")]
 fn selection_wraps_to_integration(world: &mut FileTreeWorld) {
     let name = world
         .tree

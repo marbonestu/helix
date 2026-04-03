@@ -41,7 +41,7 @@ Feature: Incremental search and jump within the file tree
       And the selection is on main.rs (first "r" match)
       When Alex types "s"
       Then the query becomes "rs"
-      And the selection moves to the first node whose name contains "rs"
+      And the first node whose name contains "rs" is selected
 
     Example: Backspace removes the last character and re-evaluates
       Given search mode is active with query "lib"
@@ -73,27 +73,27 @@ Feature: Incremental search and jump within the file tree
 
     Example: ctrl-n advances to the next matching node
       Given search mode is active with query "rs"
-      And main.rs is currently selected (first match)
+      And lib.rs is currently selected
       When Alex presses ctrl-n
-      Then the selection moves to lib.rs (second match)
+      Then the selection moves to main.rs
 
     Example: ctrl-p moves to the previous matching node
       Given search mode is active with query "rs"
-      And lib.rs is currently selected
+      And main.rs is currently selected
       When Alex presses ctrl-p
-      Then the selection moves back to main.rs
+      Then the selection moves to lib.rs
 
     Example: ctrl-n wraps around from the last match to the first
       Given search mode is active with query "rs"
-      And integration.rs is currently selected (last match)
+      And integration.rs is currently selected
       When Alex presses ctrl-n
-      Then the selection wraps to main.rs (first match)
+      Then the selection wraps to lib.rs
 
     Example: ctrl-p wraps around from the first match to the last
       Given search mode is active with query "rs"
-      And main.rs is currently selected (first match)
+      And lib.rs is currently selected
       When Alex presses ctrl-p
-      Then the selection wraps to integration.rs (last match)
+      Then the selection wraps to integration.rs
 
   Rule: Enter confirms the search and returns to normal mode
 

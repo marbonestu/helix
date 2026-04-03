@@ -70,10 +70,7 @@ fn src_selected_expanded(world: &mut FileTreeWorld) {
         .find(|(_, n)| n.name == "src")
         .map(|(id, _)| id);
     if let Some(id) = src_id {
-        if !tree.nodes()[id].expanded {
-            tree.toggle_expand(id, &config);
-            tree.rebuild_visible_pub();
-        }
+        tree.expand_sync(id, &config);
         let pos = tree.visible().iter().position(|&vid| vid == id);
         if let Some(p) = pos {
             tree.move_to(p);
@@ -83,7 +80,6 @@ fn src_selected_expanded(world: &mut FileTreeWorld) {
 
 #[given(expr = "main.rs is selected")]
 fn main_rs_selected(world: &mut FileTreeWorld) {
-    // Expand src/ first so main.rs is visible
     let config = world.tree_config.clone();
     let tree = world.tree.as_mut().expect("no FileTree");
     let src_id = tree
@@ -92,10 +88,7 @@ fn main_rs_selected(world: &mut FileTreeWorld) {
         .find(|(_, n)| n.name == "src")
         .map(|(id, _)| id);
     if let Some(id) = src_id {
-        if !tree.nodes()[id].expanded {
-            tree.toggle_expand(id, &config);
-            tree.rebuild_visible_pub();
-        }
+        tree.expand_sync(id, &config);
     }
     select_node_by_name(world, "main.rs");
 }
@@ -282,19 +275,31 @@ fn alex_presses_ctrl_y(world: &mut FileTreeWorld) {
 #[when("Alex presses l")]
 fn alex_presses_l(world: &mut FileTreeWorld) {
     let config = world.tree_config.clone();
-    let tree = world.tree.as_mut().expect("no FileTree");
-    if let Some(id) = tree.selected_id() {
-        let is_dir = tree
-            .nodes()
-            .get(id)
-            .map(|n| n.kind == NodeKind::Directory)
-            .unwrap_or(false);
-        if is_dir {
+    // Read node state before any mutable borrows.
+    let node_state = world.tree.as_ref().and_then(|t| {
+        t.selected_id().and_then(|id| {
+            t.nodes().get(id).map(|n| (n.kind, n.expanded, n.name.clone()))
+        })
+    });
+    match node_state {
+        Some((NodeKind::Directory, true, _)) => {
+            // Already expanded — collapse it (toggle_expand is sync for collapse).
+            let id = world.tree.as_ref().unwrap().selected_id().unwrap();
+            let tree = world.tree.as_mut().expect("no FileTree");
             tree.toggle_expand(id, &config);
             tree.rebuild_visible_pub();
         }
-        // For files: opening is handled by live-editor steps; here we just
-        // record that the key was pressed.
+        Some((NodeKind::Directory, false, _)) => {
+            // Collapsed — expand synchronously.
+            let id = world.tree.as_ref().unwrap().selected_id().unwrap();
+            let tree = world.tree.as_mut().expect("no FileTree");
+            tree.expand_sync(id, &config);
+        }
+        Some((NodeKind::File, _, name)) => {
+            // File — record the name for the "opens in editor" assertion.
+            world.captured_node_name = Some(name);
+        }
+        _ => {}
     }
 }
 
@@ -325,24 +330,6 @@ fn alex_presses_h(world: &mut FileTreeWorld) {
     }
 }
 
-#[when("Alex presses Enter")]
-fn alex_presses_enter(world: &mut FileTreeWorld) {
-    // Record the selected file name for assertion; actual opening requires
-    // a live Application (handled by dedicated live-editor steps if needed).
-    world.captured_node_name = world
-        .tree
-        .as_ref()
-        .and_then(|t| t.selected_node())
-        .map(|n| n.name.clone());
-}
-
-#[when("Alex presses r")]
-fn alex_presses_r(world: &mut FileTreeWorld) {
-    let config = world.tree_config.clone();
-    let tree = world.tree.as_mut().expect("no FileTree");
-    tree.refresh(&config);
-}
-
 // ---------------------------------------------------------------------------
 // Then — assertions
 // ---------------------------------------------------------------------------
@@ -356,6 +343,17 @@ fn selection_moves_to_src(world: &mut FileTreeWorld) {
         .map(|n| n.name.as_str())
         .unwrap_or("");
     assert_eq!(name, "src", "expected selection to be 'src' but was '{name}'");
+}
+
+#[then("the root row is selected")]
+fn root_row_is_selected(world: &mut FileTreeWorld) {
+    let tree = world.tree.as_ref().expect("no FileTree");
+    assert_eq!(
+        tree.selected(),
+        0,
+        "expected root row (index 0) to be selected but was {}",
+        tree.selected()
+    );
 }
 
 #[then("the selection moves to the root row")]
