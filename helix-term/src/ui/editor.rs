@@ -1613,16 +1613,14 @@ impl EditorView {
         // This prevents C-w from clearing sidebar focus before > / < arrive.
         if cx.editor.left_sidebar.window_cmd_pending {
             cx.editor.left_sidebar.window_cmd_pending = false;
+            let count = cx.count() as u16;
             return match key.code {
                 KeyCode::Char('>') => {
-                    cx.editor.left_sidebar.width =
-                        cx.editor.left_sidebar.width.saturating_add(cx.editor.count.map(|c| c.get()).unwrap_or(1) as u16);
+                    cx.editor.left_sidebar.grow(count);
                     EventResult::Consumed(None)
                 }
                 KeyCode::Char('<') => {
-                    cx.editor.left_sidebar.width = cx.editor.left_sidebar.width
-                        .saturating_sub(cx.editor.count.map(|c| c.get()).unwrap_or(1) as u16)
-                        .max(5);
+                    cx.editor.left_sidebar.shrink(count);
                     EventResult::Consumed(None)
                 }
                 // Navigation: unfocus the sidebar so the user can follow up with
@@ -1973,13 +1971,11 @@ impl EditorView {
             // C-right / C-left — grow or shrink the sidebar width, mirroring the
             // same bindings that resize splits when an editor pane is focused.
             KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                cx.editor.left_sidebar.width =
-                    cx.editor.left_sidebar.width.saturating_add(1);
+                cx.editor.left_sidebar.grow(cx.count() as u16);
                 EventResult::Consumed(None)
             }
             KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                cx.editor.left_sidebar.width =
-                    cx.editor.left_sidebar.width.saturating_sub(1).max(5);
+                cx.editor.left_sidebar.shrink(cx.count() as u16);
                 EventResult::Consumed(None)
             }
             // 's' — grep/search inside the selected directory
@@ -2170,6 +2166,8 @@ impl Component for EditorView {
                 if cx.editor.left_sidebar.focused {
                     let result = self.handle_file_tree_key(key, &mut cx);
                     if let EventResult::Consumed(_) = &result {
+                        // Clear count so it doesn't leak to the next keystroke.
+                        cx.editor.count = None;
                         // Collect any callbacks pushed by file tree handlers
                         let callbacks = take(&mut cx.callback);
                         let callback = if callbacks.is_empty() {

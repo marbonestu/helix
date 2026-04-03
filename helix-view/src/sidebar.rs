@@ -24,6 +24,8 @@ pub struct Sidebar {
     pub window_cmd_pending: bool,
 }
 
+pub const MIN_SIDEBAR_WIDTH: u16 = 5;
+
 impl Sidebar {
     pub fn new(width: u16) -> Self {
         Self {
@@ -37,9 +39,18 @@ impl Sidebar {
         }
     }
 
-    /// Toggle between the normal width and an expanded state (half the
-    /// terminal). `terminal_width` is used only when entering expanded mode
-    /// so the caller can pass the current editor area width.
+    /// Increase the sidebar width by `cols` columns.
+    pub fn grow(&mut self, cols: u16) {
+        self.width = self.width.saturating_add(cols);
+    }
+
+    /// Decrease the sidebar width by `cols` columns, clamped to [`MIN_SIDEBAR_WIDTH`].
+    pub fn shrink(&mut self, cols: u16) {
+        self.width = self.width.saturating_sub(cols).max(MIN_SIDEBAR_WIDTH);
+    }
+
+    /// Toggle between the normal width and an expanded state (half the terminal).
+    /// The pre-expand width is saved so collapsing restores it exactly.
     pub fn toggle_expand(&mut self) {
         if self.expanded {
             self.width = self.pre_expand_width;

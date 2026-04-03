@@ -3334,8 +3334,8 @@ fn reveal_in_file_tree(cx: &mut Context) {
             }
         }
     }
-    cx.editor.file_tree_visible = true;
-    cx.editor.file_tree_focused = true;
+    cx.editor.left_sidebar.visible = true;
+    cx.editor.left_sidebar.focused = true;
 
     if let Some(ref mut tree) = cx.editor.file_tree {
         tree.reveal_path(&path, &config);
@@ -6011,19 +6011,18 @@ fn wonly(cx: &mut Context) {
 }
 
 fn grow_width(cx: &mut Context) {
-    let count = cx.count();
+    let count = cx.count() as u16;
     if cx.editor.left_sidebar.focused {
-        cx.editor.left_sidebar.width = cx.editor.left_sidebar.width.saturating_add(count as u16);
+        cx.editor.left_sidebar.grow(count);
     } else {
         cx.editor.tree.resize_view(tree::Direction::Right, count as f64 * 0.2);
     }
 }
 
 fn shrink_width(cx: &mut Context) {
-    let count = cx.count();
+    let count = cx.count() as u16;
     if cx.editor.left_sidebar.focused {
-        cx.editor.left_sidebar.width =
-            cx.editor.left_sidebar.width.saturating_sub(count as u16).max(5);
+        cx.editor.left_sidebar.shrink(count);
     } else {
         cx.editor.tree.resize_view(tree::Direction::Left, count as f64 * 0.2);
     }
@@ -6040,13 +6039,11 @@ fn shrink_height(cx: &mut Context) {
 }
 
 fn grow_sidebar_width(cx: &mut Context) {
-    let step = cx.count() as u16;
-    cx.editor.left_sidebar.width = cx.editor.left_sidebar.width.saturating_add(step);
+    cx.editor.left_sidebar.grow(cx.count() as u16);
 }
 
 fn shrink_sidebar_width(cx: &mut Context) {
-    let step = cx.count() as u16;
-    cx.editor.left_sidebar.width = cx.editor.left_sidebar.width.saturating_sub(step).max(5);
+    cx.editor.left_sidebar.shrink(cx.count() as u16);
 }
 
 fn equalize_splits(cx: &mut Context) {
