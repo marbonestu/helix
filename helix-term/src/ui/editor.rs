@@ -1608,6 +1608,32 @@ impl EditorView {
             }
         }
 
+        // If C-w was pressed on the previous keypress, interpret this key as a
+        // window command without passing anything through to the normal keymap.
+        // This prevents C-w from clearing sidebar focus before > / < arrive.
+        if cx.editor.left_sidebar.window_cmd_pending {
+            cx.editor.left_sidebar.window_cmd_pending = false;
+            return match key.code {
+                KeyCode::Char('>') => {
+                    cx.editor.left_sidebar.width =
+                        cx.editor.left_sidebar.width.saturating_add(cx.editor.count.map(|c| c.get()).unwrap_or(1) as u16);
+                    EventResult::Consumed(None)
+                }
+                KeyCode::Char('<') => {
+                    cx.editor.left_sidebar.width = cx.editor.left_sidebar.width
+                        .saturating_sub(cx.editor.count.map(|c| c.get()).unwrap_or(1) as u16)
+                        .max(5);
+                    EventResult::Consumed(None)
+                }
+                // Navigation: unfocus the sidebar so the user can follow up with
+                // a normal-mode navigation key to reach the target split.
+                _ => {
+                    cx.editor.left_sidebar.focused = false;
+                    EventResult::Consumed(None)
+                }
+            };
+        }
+
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if let Some(ref mut tree) = cx.editor.file_tree {
@@ -1927,8 +1953,12 @@ impl EditorView {
                 EventResult::Consumed(None)
             }
             KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                cx.editor.left_sidebar.focused = false;
-                EventResult::Ignored(None)
+                // Consume C-w and arm the pending flag so the *next* key is
+                // handled as a window command inside the sidebar handler.
+                // This keeps focused=true until we know whether the next key
+                // is a resize (> / <) or a navigation/other command.
+                cx.editor.left_sidebar.window_cmd_pending = true;
+                EventResult::Consumed(None)
             }
             // Pass space through so chord sequences like `space e`, `space f`, etc.
             // work from the file tree.
