@@ -1,5 +1,6 @@
 pub mod flash_jump;
 pub mod flash_search;
+pub mod ts_flash_jump;
 
 use cucumber::{given, then, when, World};
 use helix_term::application::Application;
@@ -22,6 +23,10 @@ use termina::event::{Event, KeyEvent};
 pub struct NavigationWorld {
     /// Buffer text (using `#[|x]#` notation) staged by Given steps.
     pub buffer_text: String,
+
+    /// Temporary `.rs` file kept alive so helix can open it with Rust language
+    /// detection. Set by the `the Rust buffer contains` Given step.
+    pub rust_temp_file: Option<tempfile::NamedTempFile>,
 
     /// Running editor instance, kept alive between When and Then steps.
     pub app: Option<Application>,
@@ -50,6 +55,10 @@ impl std::fmt::Debug for NavigationWorld {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NavigationWorld")
             .field("buffer_text", &self.buffer_text)
+            .field(
+                "rust_temp_file",
+                &self.rust_temp_file.as_ref().map(|f| f.path()),
+            )
             .field("result_cursor", &self.result_cursor)
             .field("result_anchor", &self.result_anchor)
             .field("result_register", &self.result_register)
@@ -62,6 +71,7 @@ impl NavigationWorld {
     async fn init() -> Result<Self, anyhow::Error> {
         Ok(Self {
             buffer_text: String::new(),
+            rust_temp_file: None,
             app: None,
             result_cursor: None,
             result_anchor: None,
@@ -96,14 +106,23 @@ impl NavigationWorld {
         }
     }
 
-    /// Build a live [`Application`] using `self.buffer_text` as the initial
-    /// buffer content. Captures the initial jumplist length, then stores the
-    /// application in `self.app`.
+    /// Build a live [`Application`] using either a typed temp file (for
+    /// language-sensitive tests like treesitter) or the plain `buffer_text`
+    /// string. Captures the initial jumplist length, then stores the application
+    /// in `self.app`.
     pub fn build_app(&mut self) -> anyhow::Result<()> {
-        let app = crate::helpers::AppBuilder::new()
-            .with_input_text(self.buffer_text.clone())
-            .with_config(crate::helpers::test_config())
-            .build()?;
+        let builder = crate::helpers::AppBuilder::new()
+            .with_config(crate::helpers::test_config());
+
+        let app = if let Some(ref temp) = self.rust_temp_file {
+            // Open the typed temp file so helix detects the Rust language and
+            // activates treesitter. Cursor starts at position 0 by default.
+            builder.with_file(temp.path().to_path_buf(), None).build()?
+        } else {
+            builder
+                .with_input_text(self.buffer_text.clone())
+                .build()?
+        };
 
         self.app = Some(app);
 
