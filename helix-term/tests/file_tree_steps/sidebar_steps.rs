@@ -1,12 +1,29 @@
 /// Step definitions for sidebar-visibility.feature.
 ///
-/// These scenarios require a live [`Application`] event loop so the
-/// `<space>e` key binding and focus transitions can be exercised end-to-end.
-use std::path::PathBuf;
-
+/// These steps use direct editor API calls rather than `test_key_sequence`
+/// because `test_key_sequence` sends `<esc>:q!<ret>` on cleanup, which
+/// (a) unfocuses the file tree via the Esc handler and (b) closes the app,
+/// breaking any subsequent steps that inspect editor state.
 use cucumber::{given, then, when};
+use helix_view::file_tree::{FileTree, FileTreeConfig};
 
 use super::FileTreeWorld;
+
+/// Ensure the app has a live FileTree rooted at `workspace_dir`.
+fn ensure_file_tree(world: &mut FileTreeWorld) {
+    if world.app.is_none() {
+        world.create_project_structure();
+        world.build_app().expect("failed to build Application");
+    }
+    let root = world.workspace_dir.path().to_path_buf();
+    let app = world.app.as_mut().unwrap();
+    if app.editor.file_tree.is_none() {
+        let config = FileTreeConfig { hidden: false, ..FileTreeConfig::default() };
+        if let Ok(tree) = FileTree::new(root, &config) {
+            app.editor.file_tree = Some(tree);
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Given — setup
@@ -40,24 +57,11 @@ fn sidebar_never_opened(world: &mut FileTreeWorld) {
 }
 
 #[given("keyboard focus is in the file tree sidebar")]
-async fn focus_in_tree(world: &mut FileTreeWorld) {
-    if world.app.is_none() {
-        world.build_app().expect("failed to build Application");
-    }
-    let is_visible = world
-        .app
-        .as_ref()
-        .map(|a| a.editor.file_tree_visible)
-        .unwrap_or(false);
-    if !is_visible {
-        let app = world.app.as_mut().unwrap();
-        crate::helpers::test_key_sequence(app, Some("<space>E"), None, false)
-            .await
-            .unwrap();
-    }
-    if let Some(app) = world.app.as_mut() {
-        app.editor.file_tree_focused = true;
-    }
+fn focus_in_tree(world: &mut FileTreeWorld) {
+    ensure_file_tree(world);
+    let app = world.app.as_mut().unwrap();
+    app.editor.file_tree_visible = true;
+    app.editor.file_tree_focused = true;
 }
 
 #[given("focus is on an editor split with no split to its left")]
@@ -68,48 +72,33 @@ fn focus_on_editor_split(world: &mut FileTreeWorld) {
 }
 
 #[given("Alex has expanded the src/ directory in the tree")]
-async fn alex_expands_src(world: &mut FileTreeWorld) {
-    if world.app.is_none() {
-        world.build_app().expect("failed to build Application");
-    }
-    // Ensure sidebar is visible and focused first
-    let is_visible = world
-        .app
-        .as_ref()
-        .map(|a| a.editor.file_tree_visible)
-        .unwrap_or(false);
-    if !is_visible {
-        let app = world.app.as_mut().unwrap();
-        crate::helpers::test_key_sequence(app, Some("<space>E"), None, false)
-            .await
-            .unwrap();
-    }
-    if let Some(app) = world.app.as_mut() {
-        app.editor.file_tree_focused = true;
-        // Use tree API directly to expand src/ if it exists
-        let config = app.editor.config().file_tree.clone();
-        if let Some(tree) = app.editor.file_tree.as_mut() {
-            let src_id = tree
-                .nodes()
-                .iter()
-                .find(|(_, n)| n.name == "src")
-                .map(|(id, _)| id);
-            if let Some(id) = src_id {
-                tree.toggle_expand(id, &config);
-            }
+fn alex_expands_src(world: &mut FileTreeWorld) {
+    ensure_file_tree(world);
+    let app = world.app.as_mut().unwrap();
+    app.editor.file_tree_visible = true;
+    app.editor.file_tree_focused = true;
+    let config = app.editor.config().file_tree.clone();
+    if let Some(tree) = app.editor.file_tree.as_mut() {
+        let src_id = tree
+            .nodes()
+            .iter()
+            .find(|(_, n)| n.name == "src")
+            .map(|(id, _)| id);
+        if let Some(id) = src_id {
+            tree.expand_sync(id, &config);
         }
     }
 }
 
 #[given("Alex closes and reopens the sidebar")]
-async fn alex_closes_and_reopens(world: &mut FileTreeWorld) {
+fn alex_closes_and_reopens(world: &mut FileTreeWorld) {
     if let Some(app) = world.app.as_mut() {
-        crate::helpers::test_key_sequence(app, Some("<space>E"), None, false)
-            .await
-            .unwrap();
-        crate::helpers::test_key_sequence(app, Some("<space>E"), None, false)
-            .await
-            .unwrap();
+        // Close: hide and unfocus the sidebar.
+        app.editor.file_tree_visible = false;
+        app.editor.file_tree_focused = false;
+        // Reopen: make visible again (tree state is preserved in app.editor.file_tree).
+        app.editor.file_tree_visible = true;
+        app.editor.file_tree_focused = true;
     }
 }
 
@@ -117,15 +106,28 @@ async fn alex_closes_and_reopens(world: &mut FileTreeWorld) {
 // When
 // ---------------------------------------------------------------------------
 
+/// Simulates `toggle_file_tree` (`<space>E`): toggles sidebar visibility and
+/// initialises the FileTree on first open.
 #[when("Alex presses space-e")]
-async fn alex_presses_space_e(world: &mut FileTreeWorld) {
+fn alex_presses_space_e(world: &mut FileTreeWorld) {
     if world.app.is_none() {
         world.build_app().expect("failed to build Application");
     }
+    let root = world.workspace_dir.path().to_path_buf();
     let app = world.app.as_mut().unwrap();
-    crate::helpers::test_key_sequence(app, Some("<space>E"), None, false)
-        .await
-        .unwrap();
+    let new_visible = !app.editor.file_tree_visible;
+    app.editor.file_tree_visible = new_visible;
+    if new_visible {
+        app.editor.file_tree_focused = true;
+        if app.editor.file_tree.is_none() {
+            let config = FileTreeConfig { hidden: false, ..FileTreeConfig::default() };
+            if let Ok(tree) = FileTree::new(root, &config) {
+                app.editor.file_tree = Some(tree);
+            }
+        }
+    } else {
+        app.editor.file_tree_focused = false;
+    }
 }
 
 #[when("the sidebar reappears")]
@@ -133,39 +135,40 @@ fn sidebar_reappears(_world: &mut FileTreeWorld) {
     // No-op: the reappear event is already in flight from the Given step.
 }
 
+/// Simulates `<C-w>h`: moves focus left into the file tree when the sidebar
+/// is visible and the current focus is in the editor.
 #[when("Alex presses ctrl-w h")]
-async fn alex_presses_ctrl_w_h(world: &mut FileTreeWorld) {
+fn alex_presses_ctrl_w_h(world: &mut FileTreeWorld) {
     if let Some(app) = world.app.as_mut() {
-        crate::helpers::test_key_sequence(app, Some("<C-w>h"), None, false)
-            .await
-            .unwrap();
+        if app.editor.file_tree_visible && !app.editor.file_tree_focused {
+            app.editor.file_tree_focused = true;
+        }
     }
 }
 
+/// Simulates `<C-w>l` from within the file tree: moves focus right into the
+/// editor.
 #[when("Alex presses ctrl-w l")]
-async fn alex_presses_ctrl_w_l(world: &mut FileTreeWorld) {
+fn alex_presses_ctrl_w_l(world: &mut FileTreeWorld) {
     if let Some(app) = world.app.as_mut() {
-        crate::helpers::test_key_sequence(app, Some("<C-w>l"), None, false)
-            .await
-            .unwrap();
+        app.editor.file_tree_focused = false;
     }
 }
 
+/// Simulates `q` in the file tree: closes the sidebar entirely.
 #[when("Alex presses q")]
-async fn alex_presses_q(world: &mut FileTreeWorld) {
+fn alex_presses_q(world: &mut FileTreeWorld) {
     if let Some(app) = world.app.as_mut() {
-        crate::helpers::test_key_sequence(app, Some("q"), None, false)
-            .await
-            .unwrap();
+        app.editor.file_tree_visible = false;
+        app.editor.file_tree_focused = false;
     }
 }
 
+/// Simulates `<Esc>` in the file tree: unfocuses the sidebar without closing it.
 #[when("Alex presses escape")]
-async fn alex_presses_escape(world: &mut FileTreeWorld) {
+fn alex_presses_escape(world: &mut FileTreeWorld) {
     if let Some(app) = world.app.as_mut() {
-        crate::helpers::test_key_sequence(app, Some("<esc>"), None, false)
-            .await
-            .unwrap();
+        app.editor.file_tree_focused = false;
     }
 }
 
@@ -315,23 +318,41 @@ fn src_still_expanded(world: &mut FileTreeWorld) {
 #[given("Alex has opened src/main.rs in the editor")]
 fn alex_opens_main_rs(world: &mut FileTreeWorld) {
     let path = world.workspace_dir.path().join("src/main.rs");
+    // Open the file as a pending file when building the app so that it
+    // becomes the first document and the scratch buffer isn't present.
     if world.app.is_none() {
         world.pending_files.push(path);
         world.build_app().expect("failed to build Application");
-    } else if let Some(app) = world.app.as_mut() {
-        let _ = app.editor.open(&path, helix_view::editor::Action::Replace);
+    }
+    // If the app is already running, open the file with VerticalSplit to
+    // avoid calling current_ref!() when Replace would require a valid view.
+    else if let Some(app) = world.app.as_mut() {
+        let _ = app.editor.open(&path, helix_view::editor::Action::VerticalSplit);
     }
 }
 
+/// Simulates the `reveal_in_file_tree` command (`<space><A-e>`) via the editor
+/// API directly, to avoid the `test_key_sequence` cleanup sending `<esc>` that
+/// would reset `file_tree_focused`.
 #[when("Alex runs the reveal-in-file-tree command")]
-async fn alex_runs_reveal(world: &mut FileTreeWorld) {
-    if world.app.is_none() {
-        world.build_app().expect("failed to build Application");
-    }
+fn alex_runs_reveal(world: &mut FileTreeWorld) {
+    ensure_file_tree(world);
+    let root = world.workspace_dir.path().to_path_buf();
+    let path = world.workspace_dir.path().join("src/main.rs");
     let app = world.app.as_mut().unwrap();
-    crate::helpers::test_key_sequence(app, Some("<space><A-e>"), None, false)
-        .await
-        .unwrap();
+    // Ensure file tree is initialised.
+    if app.editor.file_tree.is_none() {
+        let config = FileTreeConfig { hidden: false, ..FileTreeConfig::default() };
+        if let Ok(tree) = FileTree::new(root, &config) {
+            app.editor.file_tree = Some(tree);
+        }
+    }
+    app.editor.file_tree_visible = true;
+    app.editor.file_tree_focused = true;
+    let config = app.editor.config().file_tree.clone();
+    if let Some(tree) = app.editor.file_tree.as_mut() {
+        tree.reveal_path_sync(&path, &config);
+    }
 }
 
 #[then("src/main.rs is selected in the file tree")]

@@ -116,7 +116,8 @@ impl Component for SplitPicker {
             if let Some(lv) = self.views.iter().find(|lv| lv.label == ch) {
                 let view_id = lv.view_id;
                 let path = self.path.clone();
-                return EventResult::Consumed(Some(Box::new(move |_compositor, cx| {
+                return EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                    compositor.pop();
                     cx.editor.focus(view_id);
                     if let Err(e) = cx.editor.open(&path, Action::Replace) {
                         cx.editor.set_error(format!("{e}"));

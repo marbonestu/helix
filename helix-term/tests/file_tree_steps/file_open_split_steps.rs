@@ -58,9 +58,9 @@ fn one_split_open(world: &mut FileTreeWorld) {
 fn two_splits_open(world: &mut FileTreeWorld) {
     ensure_app_with_tree(world);
     let app = world.app.as_mut().unwrap();
-    let main_rs = world.workspace_dir.path().join("src/main.rs");
-    // Open src/main.rs in a vertical split to create the second view.
-    let _ = app.editor.open(&main_rs, Action::VerticalSplit);
+    // Use new_file to create a second split reliably — editor.open() with
+    // Action::VerticalSplit can fail silently if the path has I/O issues.
+    app.editor.new_file(Action::VerticalSplit);
     let count = app.editor.tree.views().count();
     assert!(count >= 2, "expected at least 2 splits, found {count}");
 }
@@ -102,6 +102,12 @@ fn alex_presses_enter(world: &mut FileTreeWorld) {
     let path = world.workspace_dir.path().join("src/main.rs");
     let view_count = app.editor.tree.views().count();
     if view_count <= 1 {
+        // Use VerticalSplit when there are no views yet (avoids the
+        // current_ref! panic that Replace triggers on an empty view tree),
+        // then fall back to Replace once a view exists.
+        if view_count == 0 {
+            app.editor.new_file(Action::VerticalSplit);
+        }
         let _ = app.editor.open(&path, Action::Replace);
         app.editor.file_tree_focused = false;
     }

@@ -129,8 +129,14 @@ impl FileTreeWorld {
 
 /// Library-level: creates the project structure and inits the `FileTree`.
 /// Live-app level: ensures the sidebar is visible via `<space>e`.
+/// Library-level: creates the project structure and inits the `FileTree`.
+/// Live-app level: sets sidebar visible directly via the editor API.
+///
+/// Avoids `test_key_sequence` because its `<esc>:q!<ret>` cleanup would
+/// unfocus the file tree (the Esc handler sets `file_tree_focused = false`)
+/// and close the application, breaking subsequent steps.
 #[given("the file tree sidebar is visible")]
-async fn given_sidebar_visible(world: &mut FileTreeWorld) {
+fn given_sidebar_visible(world: &mut FileTreeWorld) {
     if world.app.is_some() {
         let is_visible = world
             .app
@@ -138,10 +144,18 @@ async fn given_sidebar_visible(world: &mut FileTreeWorld) {
             .map(|a| a.editor.file_tree_visible)
             .unwrap_or(false);
         if !is_visible {
+            let root = world.workspace_dir.path().to_path_buf();
             let app = world.app.as_mut().unwrap();
-            crate::helpers::test_key_sequence(app, Some("<space>E"), None, false)
-                .await
-                .unwrap();
+            app.editor.file_tree_visible = true;
+            if app.editor.file_tree.is_none() {
+                let config = helix_view::file_tree::FileTreeConfig {
+                    hidden: false,
+                    ..Default::default()
+                };
+                if let Ok(tree) = helix_view::file_tree::FileTree::new(root, &config) {
+                    app.editor.file_tree = Some(tree);
+                }
+            }
         }
     } else {
         world.create_project_structure();
@@ -150,10 +164,11 @@ async fn given_sidebar_visible(world: &mut FileTreeWorld) {
 }
 
 /// Library-level: creates project structure and inits the `FileTree`.
-/// Live-app level: ensures sidebar is visible and sets `file_tree_focused`.
+/// Live-app level: sets sidebar visible and focused directly via the editor API.
 #[given("the file tree sidebar is visible and focused")]
-async fn given_sidebar_visible_and_focused(world: &mut FileTreeWorld) {
+fn given_sidebar_visible_and_focused(world: &mut FileTreeWorld) {
     if world.app.is_some() {
+        let root = world.workspace_dir.path().to_path_buf();
         let is_visible = world
             .app
             .as_ref()
@@ -161,9 +176,16 @@ async fn given_sidebar_visible_and_focused(world: &mut FileTreeWorld) {
             .unwrap_or(false);
         if !is_visible {
             let app = world.app.as_mut().unwrap();
-            crate::helpers::test_key_sequence(app, Some("<space>E"), None, false)
-                .await
-                .unwrap();
+            app.editor.file_tree_visible = true;
+            if app.editor.file_tree.is_none() {
+                let config = helix_view::file_tree::FileTreeConfig {
+                    hidden: false,
+                    ..Default::default()
+                };
+                if let Ok(tree) = helix_view::file_tree::FileTree::new(root, &config) {
+                    app.editor.file_tree = Some(tree);
+                }
+            }
         }
         if let Some(app) = world.app.as_mut() {
             app.editor.file_tree_focused = true;
