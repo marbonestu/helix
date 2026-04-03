@@ -1933,8 +1933,20 @@ impl EditorView {
             // Pass space through so chord sequences like `space e`, `space f`, etc.
             // work from the file tree.
             KeyCode::Char(' ') if key.modifiers.is_empty() => {
-                cx.editor.file_tree_focused = false;
+                cx.editor.left_sidebar.focused = false;
                 EventResult::Ignored(None)
+            }
+            // C-right / C-left — grow or shrink the sidebar width, mirroring the
+            // same bindings that resize splits when an editor pane is focused.
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                cx.editor.left_sidebar.width =
+                    cx.editor.left_sidebar.width.saturating_add(1);
+                EventResult::Consumed(None)
+            }
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                cx.editor.left_sidebar.width =
+                    cx.editor.left_sidebar.width.saturating_sub(1).max(5);
+                EventResult::Consumed(None)
             }
             // 's' — grep/search inside the selected directory
             KeyCode::Char('s') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
