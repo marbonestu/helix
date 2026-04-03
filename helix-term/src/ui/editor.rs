@@ -1647,7 +1647,7 @@ impl EditorView {
                 }
                 EventResult::Consumed(None)
             }
-            KeyCode::Char('h') | KeyCode::Left => {
+            KeyCode::Char('h') | KeyCode::Left if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(ref mut tree) = cx.editor.file_tree {
                     if let Some(id) = tree.selected_id() {
                         let node = tree.nodes().get(id);
@@ -1705,7 +1705,7 @@ impl EditorView {
                 }
                 EventResult::Consumed(None)
             }
-            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let open_path = if let Some(ref mut tree) = cx.editor.file_tree {
                     if let Some(id) = tree.selected_id() {
                         match tree.nodes().get(id).map(|n| n.kind) {
