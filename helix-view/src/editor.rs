@@ -10,6 +10,7 @@ use crate::{
     info::Info,
     input::KeyEvent,
     register::Registers,
+    sidebar::Sidebar,
     theme::{self, Theme},
     tree::{self, Tree},
     Document, DocumentId, View, ViewId,
@@ -1297,8 +1298,7 @@ pub struct Editor {
     pub dir_stack: VecDeque<PathBuf>,
 
     pub file_tree: Option<crate::file_tree::FileTree>,
-    pub file_tree_visible: bool,
-    pub file_tree_focused: bool,
+    pub left_sidebar: Sidebar,
 
     pub exit_code: i32,
 
@@ -1444,8 +1444,7 @@ impl Editor {
             cursor_cache: CursorCache::default(),
             dir_stack: VecDeque::with_capacity(DIR_STACK_CAP),
             file_tree: None,
-            file_tree_visible: false,
-            file_tree_focused: false,
+            left_sidebar: Sidebar::new(conf.file_tree.width),
         }
     }
 

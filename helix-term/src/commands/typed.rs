@@ -3018,9 +3018,9 @@ fn tree_toggle(
             .map_err(|e| anyhow::anyhow!(e))?;
         cx.editor.file_tree = Some(tree);
     }
-    cx.editor.file_tree_visible = !cx.editor.file_tree_visible;
-    if !cx.editor.file_tree_visible {
-        cx.editor.file_tree_focused = false;
+    cx.editor.left_sidebar.visible = !cx.editor.left_sidebar.visible;
+    if !cx.editor.left_sidebar.visible {
+        cx.editor.left_sidebar.focused = false;
     }
     Ok(())
 }

@@ -560,6 +560,8 @@ impl MappableCommand {
         shrink_height, "Shrink split height",
         equalize_splits, "Equalize split sizes",
         toggle_zoom, "Toggle zoom on focused split",
+        grow_sidebar_width, "Grow the sidebar panel width",
+        shrink_sidebar_width, "Shrink the sidebar panel width",
         select_register, "Select register",
         insert_register, "Insert register",
         copy_between_registers, "Copy between two registers",
@@ -3294,17 +3296,17 @@ fn toggle_file_tree(cx: &mut Context) {
             }
         }
     }
-    cx.editor.file_tree_visible = !cx.editor.file_tree_visible;
-    if cx.editor.file_tree_visible {
-        cx.editor.file_tree_focused = true;
+    cx.editor.left_sidebar.visible = !cx.editor.left_sidebar.visible;
+    if cx.editor.left_sidebar.visible {
+        cx.editor.left_sidebar.focused = true;
     } else {
-        cx.editor.file_tree_focused = false;
+        cx.editor.left_sidebar.focused = false;
     }
 }
 
 fn focus_file_tree(cx: &mut Context) {
-    if cx.editor.file_tree_visible {
-        cx.editor.file_tree_focused = !cx.editor.file_tree_focused;
+    if cx.editor.left_sidebar.visible {
+        cx.editor.left_sidebar.focused = !cx.editor.left_sidebar.focused;
     }
 }
 
@@ -5903,8 +5905,8 @@ fn rotate_view_reverse(cx: &mut Context) {
 }
 
 fn jump_view_right(cx: &mut Context) {
-    if cx.editor.file_tree_focused {
-        cx.editor.file_tree_focused = false;
+    if cx.editor.left_sidebar.focused {
+        cx.editor.left_sidebar.focused = false;
         return;
     }
     cx.editor.focus_direction(tree::Direction::Right)
@@ -5914,8 +5916,8 @@ fn jump_view_left(cx: &mut Context) {
     let current_view = cx.editor.tree.focus;
     if let Some(id) = cx.editor.tree.find_split_in_direction(current_view, tree::Direction::Left) {
         cx.editor.focus(id);
-    } else if cx.editor.file_tree_visible {
-        cx.editor.file_tree_focused = true;
+    } else if cx.editor.left_sidebar.visible {
+        cx.editor.left_sidebar.focused = true;
     }
 }
 
@@ -6026,6 +6028,16 @@ fn grow_height(cx: &mut Context) {
 fn shrink_height(cx: &mut Context) {
     let count = cx.count() as f64 * 0.2;
     cx.editor.tree.resize_view(tree::Direction::Up, count);
+}
+
+fn grow_sidebar_width(cx: &mut Context) {
+    let step = cx.count() as u16;
+    cx.editor.left_sidebar.width = cx.editor.left_sidebar.width.saturating_add(step);
+}
+
+fn shrink_sidebar_width(cx: &mut Context) {
+    let step = cx.count() as u16;
+    cx.editor.left_sidebar.width = cx.editor.left_sidebar.width.saturating_sub(step).max(5);
 }
 
 fn equalize_splits(cx: &mut Context) {

@@ -139,3 +139,9 @@ name = "navigation_bdd"
 path = "tests/navigation_bdd.rs"
 harness = false
 required-features = ["integration"]
+
+[[test]]
+name = "resize_bdd"
+path = "tests/resize_bdd.rs"
+harness = false
+required-features = ["integration"]

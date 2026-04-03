@@ -41,8 +41,8 @@ fn sidebar_hidden(world: &mut FileTreeWorld) {
         world.build_app().expect("failed to build Application");
     }
     let app = world.app.as_mut().unwrap();
-    app.editor.file_tree_visible = false;
-    app.editor.file_tree_focused = false;
+    app.editor.left_sidebar.visible = false;
+    app.editor.left_sidebar.focused = false;
 }
 
 #[given("the file tree sidebar has never been opened in this session")]
@@ -51,8 +51,8 @@ fn sidebar_never_opened(world: &mut FileTreeWorld) {
         world.build_app().expect("failed to build Application");
     }
     let app = world.app.as_mut().unwrap();
-    app.editor.file_tree_visible = false;
-    app.editor.file_tree_focused = false;
+    app.editor.left_sidebar.visible = false;
+    app.editor.left_sidebar.focused = false;
     app.editor.file_tree = None;
 }
 
@@ -60,14 +60,14 @@ fn sidebar_never_opened(world: &mut FileTreeWorld) {
 fn focus_in_tree(world: &mut FileTreeWorld) {
     ensure_file_tree(world);
     let app = world.app.as_mut().unwrap();
-    app.editor.file_tree_visible = true;
-    app.editor.file_tree_focused = true;
+    app.editor.left_sidebar.visible = true;
+    app.editor.left_sidebar.focused = true;
 }
 
 #[given("focus is on an editor split with no split to its left")]
 fn focus_on_editor_split(world: &mut FileTreeWorld) {
     if let Some(app) = world.app.as_mut() {
-        app.editor.file_tree_focused = false;
+        app.editor.left_sidebar.focused = false;
     }
 }
 
@@ -75,8 +75,8 @@ fn focus_on_editor_split(world: &mut FileTreeWorld) {
 fn alex_expands_src(world: &mut FileTreeWorld) {
     ensure_file_tree(world);
     let app = world.app.as_mut().unwrap();
-    app.editor.file_tree_visible = true;
-    app.editor.file_tree_focused = true;
+    app.editor.left_sidebar.visible = true;
+    app.editor.left_sidebar.focused = true;
     let config = app.editor.config().file_tree.clone();
     if let Some(tree) = app.editor.file_tree.as_mut() {
         let src_id = tree
@@ -183,7 +183,7 @@ fn sidebar_becomes_visible(world: &mut FileTreeWorld) {
         .as_ref()
         .expect("no Application")
         .editor
-        .file_tree_visible;
+        .left_sidebar.visible;
     assert!(visible, "expected file tree sidebar to be visible");
 }
 
@@ -194,7 +194,7 @@ fn sidebar_is_hidden(world: &mut FileTreeWorld) {
         .as_ref()
         .expect("no Application")
         .editor
-        .file_tree_visible;
+        .left_sidebar.visible;
     assert!(!visible, "expected file tree sidebar to be hidden");
 }
 
@@ -205,7 +205,7 @@ fn focus_moves_to_tree(world: &mut FileTreeWorld) {
         .as_ref()
         .expect("no Application")
         .editor
-        .file_tree_focused;
+        .left_sidebar.focused;
     assert!(focused, "expected keyboard focus to be in the file tree sidebar");
 }
 
@@ -216,7 +216,7 @@ fn focus_returns_to_editor(world: &mut FileTreeWorld) {
         .as_ref()
         .expect("no Application")
         .editor
-        .file_tree_focused;
+        .left_sidebar.focused;
     assert!(!focused, "expected keyboard focus to be in the editor, not the tree");
 }
 
@@ -227,7 +227,7 @@ fn sidebar_remains_visible(world: &mut FileTreeWorld) {
         .as_ref()
         .expect("no Application")
         .editor
-        .file_tree_visible;
+        .left_sidebar.visible;
     assert!(visible, "expected file tree sidebar to remain visible");
 }
 

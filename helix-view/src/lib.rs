@@ -17,6 +17,7 @@ pub mod input;
 pub mod keyboard;
 pub mod register;
 pub mod session;
+pub mod sidebar;
 pub mod theme;
 pub mod tree;
 pub mod view;

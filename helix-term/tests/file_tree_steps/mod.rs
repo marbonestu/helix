@@ -141,7 +141,7 @@ fn given_sidebar_visible(world: &mut FileTreeWorld) {
         let is_visible = world
             .app
             .as_ref()
-            .map(|a| a.editor.file_tree_visible)
+            .map(|a| a.editor.left_sidebar.visible)
             .unwrap_or(false);
         if !is_visible {
             let root = world.workspace_dir.path().to_path_buf();
@@ -172,7 +172,7 @@ fn given_sidebar_visible_and_focused(world: &mut FileTreeWorld) {
         let is_visible = world
             .app
             .as_ref()
-            .map(|a| a.editor.file_tree_visible)
+            .map(|a| a.editor.left_sidebar.visible)
             .unwrap_or(false);
         if !is_visible {
             let app = world.app.as_mut().unwrap();
@@ -188,7 +188,7 @@ fn given_sidebar_visible_and_focused(world: &mut FileTreeWorld) {
             }
         }
         if let Some(app) = world.app.as_mut() {
-            app.editor.file_tree_focused = true;
+            app.editor.left_sidebar.focused = true;
         }
     } else {
         world.create_project_structure();
