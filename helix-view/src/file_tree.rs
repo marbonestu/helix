@@ -1057,6 +1057,13 @@ impl FileTree {
         self.visible_dirty = false;
     }
 
+    /// Force an unconditional visible-list rebuild, bypassing the dirty flag.
+    /// Intended for benchmarking the rebuild cost in isolation.
+    pub fn force_rebuild_visible(&mut self) {
+        self.visible_dirty = true;
+        self.rebuild_visible();
+    }
+
     // --- Navigation ---
 
     pub fn move_up(&mut self) {

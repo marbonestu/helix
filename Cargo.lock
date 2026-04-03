@@ -2023,6 +2023,7 @@ dependencies = [
  "bitflags 2.11.0",
  "chardetng",
  "clipboard-win",
+ "criterion",
  "crossterm",
  "futures-util",
  "helix-core",

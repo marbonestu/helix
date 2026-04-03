@@ -66,3 +66,8 @@ rustix = { version = "1.1", features = ["fs"] }
 
 [dev-dependencies]
 helix-tui = { path = "../helix-tui" }
+criterion.workspace = true
+
+[[bench]]
+name = "file_tree"
+harness = false
