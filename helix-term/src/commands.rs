@@ -6013,8 +6013,10 @@ fn wonly(cx: &mut Context) {
 fn grow_width(cx: &mut Context) {
     let count = cx.count() as u16;
     if cx.editor.left_sidebar.focused {
+        // Sidebar widths are absolute columns; sidebar gets count columns.
         cx.editor.left_sidebar.grow(count);
     } else {
+        // Split sizes are proportional weights; 0.2 is the weight delta per step.
         cx.editor.tree.resize_view(tree::Direction::Right, count as f64 * 0.2);
     }
 }
@@ -6029,13 +6031,11 @@ fn shrink_width(cx: &mut Context) {
 }
 
 fn grow_height(cx: &mut Context) {
-    let count = cx.count() as f64 * 0.2;
-    cx.editor.tree.resize_view(tree::Direction::Down, count);
+    cx.editor.tree.resize_view(tree::Direction::Down, cx.count() as f64 * 0.2);
 }
 
 fn shrink_height(cx: &mut Context) {
-    let count = cx.count() as f64 * 0.2;
-    cx.editor.tree.resize_view(tree::Direction::Up, count);
+    cx.editor.tree.resize_view(tree::Direction::Up, cx.count() as f64 * 0.2);
 }
 
 fn grow_sidebar_width(cx: &mut Context) {

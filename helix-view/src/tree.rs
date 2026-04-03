@@ -331,13 +331,17 @@ impl Tree {
     }
 
     fn equalize_recursive(&mut self, node_id: ViewId) {
-        if let Content::Container(container) = &mut self.nodes[node_id].content {
-            let len = container.children.len();
-            container.weights = vec![1.0; len];
-            let children: Vec<ViewId> = container.children.clone();
-            for child in children {
-                self.equalize_recursive(child);
+        // Clone children before recursing: the mutable borrow of `self.nodes[node_id]`
+        // must be released before we can call `self.equalize_recursive` again.
+        let children = match &mut self.nodes[node_id].content {
+            Content::Container(container) => {
+                container.weights = vec![1.0; container.children.len()];
+                container.children.clone()
             }
+            Content::View(_) => return,
+        };
+        for child in children {
+            self.equalize_recursive(child);
         }
     }
 
