@@ -618,6 +618,79 @@ pub fn goto_treesitter_object(
     last_range
 }
 
+/// Collects all treesitter objects of `object_name` visible within `viewport`
+/// (a char-index range) and in the given direction from the cursor.
+///
+/// - `Direction::Forward` — nodes whose start is **at or after** the cursor,
+///   returned in ascending order (nearest first).
+/// - `Direction::Backward` — nodes whose start is **before** the cursor,
+///   returned in descending order (nearest first).
+///
+/// Nodes that span outside the document or outside the viewport are excluded.
+/// Duplicate ranges (same start/end) are deduplicated.
+#[allow(clippy::too_many_arguments)]
+pub fn find_all_treesitter_objects(
+    slice: RopeSlice,
+    cursor_range: Range,
+    viewport: std::ops::Range<usize>,
+    object_name: &str,
+    dir: Direction,
+    slice_tree: &Node,
+    syntax: &Syntax,
+    loader: &syntax::Loader,
+) -> Vec<Range> {
+    let Some(textobject_query) = loader.textobject_query(syntax.root_language()) else {
+        return Vec::new();
+    };
+
+    let byte_pos = slice.char_to_byte(cursor_range.cursor(slice));
+    let viewport_start_byte = slice.char_to_byte(viewport.start);
+    let viewport_end_byte = slice.char_to_byte(viewport.end.min(slice.len_chars()));
+    let doc_len_bytes = slice.len_bytes();
+
+    let cap_name = |t: TextObject| format!("{}.{}", object_name, t);
+    let Some(nodes) = textobject_query.capture_nodes_any(
+        &[
+            &cap_name(TextObject::Movement),
+            &cap_name(TextObject::Around),
+            &cap_name(TextObject::Inside),
+        ],
+        slice_tree,
+        slice,
+    ) else {
+        return Vec::new();
+    };
+
+    let mut ranges: Vec<Range> = nodes
+        .filter(|n| {
+            let start = n.start_byte();
+            let end = n.end_byte();
+            start < doc_len_bytes
+                && end <= doc_len_bytes
+                && start >= viewport_start_byte
+                && start < viewport_end_byte
+        })
+        .filter(|n| match dir {
+            Direction::Forward => n.start_byte() >= byte_pos,
+            Direction::Backward => n.start_byte() < byte_pos,
+        })
+        .map(|n| {
+            let start_char = slice.byte_to_char(n.start_byte());
+            let end_char = slice.byte_to_char(n.end_byte());
+            Range::new(start_char, end_char)
+        })
+        .collect();
+
+    ranges.sort_unstable_by_key(|r| (r.from(), Reverse(r.to())));
+    ranges.dedup_by(|a, b| a.from() == b.from() && a.to() == b.to());
+
+    if dir == Direction::Backward {
+        ranges.reverse();
+    }
+
+    ranges
+}
+
 fn find_parent_start<'tree>(node: &Node<'tree>) -> Option<Node<'tree>> {
     let start = node.start_byte();
     let mut node = Cow::Borrowed(node);
