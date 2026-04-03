@@ -1,10 +1,10 @@
-mod session_steps;
+mod resize_steps;
 
 #[path = "test/helpers.rs"]
 pub mod helpers;
 
 use cucumber::World as _;
-use session_steps::SessionWorld;
+use resize_steps::ResizeWorld;
 
 #[tokio::main]
 async fn main() {
@@ -13,7 +13,7 @@ async fn main() {
         "/../../../../specs/resizable-splits"
     );
 
-    SessionWorld::cucumber()
+    ResizeWorld::cucumber()
         .max_concurrent_scenarios(1)
         .run(features_dir)
         .await;
