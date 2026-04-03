@@ -222,8 +222,6 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "-" => shrink_height,
             "=" => equalize_splits,
             "z" => toggle_zoom,
-            "]" => grow_sidebar_width,
-            "[" => shrink_sidebar_width,
             "n" => { "New split scratch buffer"
                 "C-s" | "s" => hsplit_new,
                 "C-v" | "v" => vsplit_new,
@@ -299,8 +297,6 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
                 "-" => shrink_height,
                 "=" => equalize_splits,
                 "z" => toggle_zoom,
-                "]" => grow_sidebar_width,
-                "[" => shrink_sidebar_width,
                 "n" => { "New split scratch buffer"
                     "C-s" | "s" => hsplit_new,
                     "C-v" | "v" => vsplit_new,

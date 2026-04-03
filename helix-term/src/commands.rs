@@ -6011,13 +6011,22 @@ fn wonly(cx: &mut Context) {
 }
 
 fn grow_width(cx: &mut Context) {
-    let count = cx.count() as f64 * 0.2;
-    cx.editor.tree.resize_view(tree::Direction::Right, count);
+    let count = cx.count();
+    if cx.editor.left_sidebar.focused {
+        cx.editor.left_sidebar.width = cx.editor.left_sidebar.width.saturating_add(count as u16);
+    } else {
+        cx.editor.tree.resize_view(tree::Direction::Right, count as f64 * 0.2);
+    }
 }
 
 fn shrink_width(cx: &mut Context) {
-    let count = cx.count() as f64 * 0.2;
-    cx.editor.tree.resize_view(tree::Direction::Left, count);
+    let count = cx.count();
+    if cx.editor.left_sidebar.focused {
+        cx.editor.left_sidebar.width =
+            cx.editor.left_sidebar.width.saturating_sub(count as u16).max(5);
+    } else {
+        cx.editor.tree.resize_view(tree::Direction::Left, count as f64 * 0.2);
+    }
 }
 
 fn grow_height(cx: &mut Context) {

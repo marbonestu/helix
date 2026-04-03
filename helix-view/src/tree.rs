@@ -285,20 +285,28 @@ impl Tree {
                     .iter()
                     .position(|&id| id == current)
                     .unwrap();
+                // Preferred sibling: right/below when growing, left/above when shrinking.
+                // If the preferred side has no sibling, fall back to the opposite side so
+                // the command always has an effect as long as any neighbour exists.
                 let sibling_pos = if grows {
                     if pos + 1 < container.children.len() {
                         pos + 1
+                    } else if pos > 0 {
+                        pos - 1
                     } else {
-                        return; // no sibling to the right/below
+                        return; // single child — nothing to take from
                     }
                 } else if pos > 0 {
                     pos - 1
+                } else if pos + 1 < container.children.len() {
+                    pos + 1
                 } else {
-                    return; // no sibling to the left/above
+                    return; // single child — nothing to give to
                 };
 
                 let container = self.container_mut(parent_id);
-                // For grow: take weight from sibling; for shrink: take weight from self.
+                // Grow: take weight from the sibling and give to self.
+                // Shrink: take weight from self and give to the sibling.
                 let (donor, recipient) = if grows { (sibling_pos, pos) } else { (pos, sibling_pos) };
                 let max_transfer = container.weights[donor] - 0.1;
                 let transfer = amount.min(max_transfer);
@@ -1371,22 +1379,26 @@ mod test {
     }
 
     #[test]
-    fn resize_view_no_op_at_edge() {
+    fn resize_view_fallback_to_opposite_sibling() {
+        // When the preferred sibling doesn't exist, the resize falls back to
+        // the opposite side so grow/shrink always has an effect if any neighbour exists.
         let mut tree = make_tree(180, 80);
         let a = tree.focus;
         let b = add_vsplit(&mut tree);
 
-        // b is the rightmost — growing right should be a no-op
+        // b is rightmost — growing right falls back to taking from a (left sibling)
         tree.focus = b;
-        let weights_before = root_container_weights(&tree);
         tree.resize_view(Direction::Right, 0.4);
-        assert_eq!(root_container_weights(&tree), weights_before);
+        let weights = root_container_weights(&tree);
+        assert!(weights[1] > 1.0, "b should have grown via fallback");
+        assert!(weights[0] < 1.0, "a should have shrunk as donor");
 
-        // a is the leftmost — growing left should be a no-op
+        // a is leftmost — shrinking left falls back to giving to b (right sibling)
         tree.focus = a;
-        let weights_before = root_container_weights(&tree);
-        tree.resize_view(Direction::Left, 0.4);
-        assert_eq!(root_container_weights(&tree), weights_before);
+        let w_a_before = root_container_weights(&tree)[0];
+        tree.resize_view(Direction::Left, 0.2);
+        let weights = root_container_weights(&tree);
+        assert!(weights[0] < w_a_before, "a should have shrunk via fallback");
     }
 
     #[test]
