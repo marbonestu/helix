@@ -132,10 +132,24 @@ pub fn render_file_tree(
                 .try_get("ui.sidebar.git.modified")
                 .or_else(|| theme.try_get("warning"))
                 .or_else(|| theme.try_get("diff.delta")),
-            GitStatus::Added | GitStatus::Untracked => theme
+            GitStatus::Added => theme
                 .try_get("ui.sidebar.git.added")
-                .or_else(|| theme.try_get("ui.sidebar.git.untracked"))
                 .or_else(|| theme.try_get("diff.plus")),
+            GitStatus::Staged => theme
+                .try_get("ui.sidebar.git.staged")
+                .or_else(|| theme.try_get("ui.sidebar.git.modified"))
+                .or_else(|| theme.try_get("diff.delta")),
+            GitStatus::Untracked => theme
+                .try_get("ui.sidebar.git.untracked")
+                // `ui.text.inactive` is the standard "muted text" scope used by
+                // most themes for dimmed/inactive content — the same visual
+                // effect as comments without pulling from the comment scope.
+                .or_else(|| theme.try_get("ui.text.inactive"))
+                .or_else(|| {
+                    theme
+                        .try_get("ui.text")
+                        .map(|s| s.add_modifier(Modifier::DIM))
+                }),
             GitStatus::Deleted => theme
                 .try_get("ui.sidebar.git.deleted")
                 .or_else(|| theme.try_get("error"))

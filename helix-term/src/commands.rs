@@ -648,6 +648,8 @@ impl MappableCommand {
         goto_prev_tabstop, "Goto next snippet placeholder",
         rotate_selections_first, "Make the first selection your primary one",
         rotate_selections_last, "Make the last selection your primary one",
+        git_open_file_in_browser, "Open current file on the git hosting website",
+        git_open_line_in_browser, "Open current file at the cursor line on the git hosting website",
     );
 }
 
@@ -3443,7 +3445,105 @@ fn buffer_picker(cx: &mut Context) {
             (cursor_line, cursor_line)
         });
         Some((meta.id.into(), lines))
-    });
+    })
+    .with_refresh_fn(|editor| {
+        let current = editor.tree.focus;
+        let current_doc = editor.documents.get(&editor.tree.get(current).doc).map(|d| d.id());
+        let mut items: Vec<BufferMeta> = editor
+            .documents
+            .values()
+            .map(|doc| BufferMeta {
+                id: doc.id(),
+                path: doc.path().cloned(),
+                is_modified: doc.is_modified(),
+                is_current: Some(doc.id()) == current_doc,
+                focused_at: doc.focused_at,
+            })
+            .collect();
+        items.sort_unstable_by_key(|item| std::cmp::Reverse(item.focused_at));
+        items
+    })
+    // ctrl-x: close the selected buffer, picker refreshes in place.
+    .with_action(
+        helix_view::input::KeyEvent {
+            code: helix_view::keyboard::KeyCode::Char('x'),
+            modifiers: helix_view::keyboard::KeyModifiers::CONTROL,
+        },
+        |cx, meta, _all, _cursor| {
+            use helix_view::editor::CloseError;
+            match cx.editor.close_document(meta.id, false) {
+                Ok(()) => {}
+                Err(CloseError::BufferModified(name)) => {
+                    cx.editor.set_error(format!(
+                        "'{name}' has unsaved changes; use :buffer-close! to force"
+                    ));
+                }
+                Err(CloseError::DoesNotExist | CloseError::SaveError(_)) => {}
+            }
+        },
+    )
+    // alt-o: close all buffers except the selected one.
+    .with_action(
+        helix_view::input::KeyEvent {
+            code: helix_view::keyboard::KeyCode::Char('o'),
+            modifiers: helix_view::keyboard::KeyModifiers::ALT,
+        },
+        |cx, meta, all, _cursor| {
+            use helix_view::editor::CloseError;
+            for other in all.iter().filter(|m| m.id != meta.id) {
+                match cx.editor.close_document(other.id, false) {
+                    Ok(()) | Err(CloseError::DoesNotExist) => {}
+                    Err(CloseError::BufferModified(name)) => {
+                        cx.editor.set_error(format!(
+                            "'{name}' has unsaved changes"
+                        ));
+                        return;
+                    }
+                    Err(CloseError::SaveError(_)) => {}
+                }
+            }
+        },
+    )
+    // alt-k: close all buffers above the selected one in the list.
+    .with_action(
+        helix_view::input::KeyEvent {
+            code: helix_view::keyboard::KeyCode::Char('k'),
+            modifiers: helix_view::keyboard::KeyModifiers::ALT,
+        },
+        |cx, _meta, all, cursor| {
+            use helix_view::editor::CloseError;
+            for meta in all[..cursor].iter() {
+                match cx.editor.close_document(meta.id, false) {
+                    Ok(()) | Err(CloseError::DoesNotExist) => {}
+                    Err(CloseError::BufferModified(name)) => {
+                        cx.editor.set_error(format!("'{name}' has unsaved changes"));
+                        return;
+                    }
+                    Err(CloseError::SaveError(_)) => {}
+                }
+            }
+        },
+    )
+    // alt-j: close all buffers below the selected one in the list.
+    .with_action(
+        helix_view::input::KeyEvent {
+            code: helix_view::keyboard::KeyCode::Char('j'),
+            modifiers: helix_view::keyboard::KeyModifiers::ALT,
+        },
+        |cx, _meta, all, cursor| {
+            use helix_view::editor::CloseError;
+            for meta in all[cursor + 1..].iter() {
+                match cx.editor.close_document(meta.id, false) {
+                    Ok(()) | Err(CloseError::DoesNotExist) => {}
+                    Err(CloseError::BufferModified(name)) => {
+                        cx.editor.set_error(format!("'{name}' has unsaved changes"));
+                        return;
+                    }
+                    Err(CloseError::SaveError(_)) => {}
+                }
+            }
+        },
+    );
     cx.push_layer(Box::new(overlaid(picker)));
 }
 
@@ -3567,6 +3667,7 @@ fn changed_file_picker(cx: &mut Context) {
             match change {
                 FileChange::Untracked { .. } => Span::styled("? untracked", data.style_untracked),
                 FileChange::Added { .. } => Span::styled("+ added", data.style_added),
+                FileChange::Staged { .. } => Span::styled("S staged", data.style_modified),
                 FileChange::Modified { .. } => Span::styled("~ modified", data.style_modified),
                 FileChange::Conflict { .. } => Span::styled("x conflict", data.style_conflict),
                 FileChange::Deleted { .. } => Span::styled("- deleted", data.style_deleted),
@@ -3584,6 +3685,7 @@ fn changed_file_picker(cx: &mut Context) {
             match change {
                 FileChange::Untracked { path } => display_path(path),
                 FileChange::Added { path } => display_path(path),
+                FileChange::Staged { path } => display_path(path),
                 FileChange::Modified { path } => display_path(path),
                 FileChange::Conflict { path } => display_path(path),
                 FileChange::Deleted { path } => display_path(path),
@@ -7510,5 +7612,107 @@ fn lsp_or_syntax_workspace_symbol_picker(cx: &mut Context) {
         lsp::workspace_symbol_picker(cx);
     } else {
         syntax_workspace_symbol_picker(cx);
+    }
+}
+
+// --- Git: open in browser ----------------------------------------------------
+
+/// Resolve the web URL for `path` (absolute) at an optional 1-based `line`.
+///
+/// Supports GitHub, GitLab, and Bitbucket remotes in both SSH and HTTPS form.
+pub fn git_web_url_for_path(path: &std::path::Path, line: Option<usize>) -> anyhow::Result<String> {
+    use std::process::Command;
+
+    let dir = path.parent().unwrap_or(path);
+    let dir_str = dir
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("path contains non-UTF-8 characters: {}", dir.display()))?;
+
+    let git = |args: &[&str]| -> anyhow::Result<String> {
+        let out = Command::new("git")
+            .args(["-C", dir_str])
+            .args(args)
+            .output()
+            .map_err(|e| anyhow::anyhow!("git: {e}"))?;
+        if !out.status.success() {
+            let msg = String::from_utf8_lossy(&out.stderr);
+            anyhow::bail!("{}", msg.trim());
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+
+    let git_root = std::path::PathBuf::from(git(&["rev-parse", "--show-toplevel"])?);
+    let remote   = git(&["remote", "get-url", "origin"])?;
+    let branch   = git(&["rev-parse", "--abbrev-ref", "HEAD"])?;
+
+    // Normalise the remote to (host, owner/repo) without .git suffix.
+    let remote = remote.trim_end_matches(".git");
+    let (host, repo) = if let Some(rest) = remote.strip_prefix("git@") {
+        // git@github.com:owner/repo
+        rest.split_once(':').ok_or_else(|| anyhow::anyhow!("cannot parse SSH remote: {remote}"))?
+    } else if let Some(rest) = remote.strip_prefix("https://").or_else(|| remote.strip_prefix("http://")) {
+        // https://github.com/owner/repo
+        rest.split_once('/').ok_or_else(|| anyhow::anyhow!("cannot parse HTTPS remote: {remote}"))?
+    } else {
+        anyhow::bail!("unrecognised remote format: {remote}");
+    };
+
+    let rel = path
+        .strip_prefix(&git_root)
+        .map_err(|_| anyhow::anyhow!("file is not inside git root {}", git_root.display()))?
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("non-UTF-8 path"))?;
+
+    let base = if host.contains("gitlab") {
+        format!("https://{host}/{repo}/-/blob/{branch}/{rel}")
+    } else if host.contains("bitbucket") {
+        format!("https://{host}/{repo}/src/{branch}/{rel}")
+    } else {
+        // GitHub, Gitea, Forgejo, etc.
+        format!("https://{host}/{repo}/blob/{branch}/{rel}")
+    };
+
+    let url = match line {
+        Some(n) if host.contains("bitbucket") => format!("{base}#lines-{n}"),
+        Some(n)                                => format!("{base}#L{n}"),
+        None                                   => base,
+    };
+
+    Ok(url)
+}
+
+fn open_url_in_browser(url: &str, editor: &mut Editor) {
+    #[cfg(target_os = "macos")]
+    let opener = "open";
+    #[cfg(not(target_os = "macos"))]
+    let opener = "xdg-open";
+
+    match std::process::Command::new(opener).arg(url).spawn() {
+        Ok(_)  => editor.set_status(format!("Opening: {url}")),
+        Err(e) => editor.set_error(format!("Cannot open browser: {e}")),
+    }
+}
+
+fn git_open_file_in_browser(cx: &mut Context) {
+    let path = doc!(cx.editor).path().cloned();
+    match path.as_deref().map(|p| git_web_url_for_path(p, None)) {
+        Some(Ok(url))  => open_url_in_browser(&url, cx.editor),
+        Some(Err(e))   => cx.editor.set_error(e.to_string()),
+        None           => cx.editor.set_error("Buffer has no file path"),
+    }
+}
+
+fn git_open_line_in_browser(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+    let line = doc
+        .selection(view.id)
+        .primary()
+        .cursor_line(doc.text().slice(..))
+        + 1; // convert to 1-based
+    let path = doc.path().cloned();
+    match path.as_deref().map(|p| git_web_url_for_path(p, Some(line))) {
+        Some(Ok(url))  => open_url_in_browser(&url, cx.editor),
+        Some(Err(e))   => cx.editor.set_error(e.to_string()),
+        None           => cx.editor.set_error("Buffer has no file path"),
     }
 }

@@ -94,11 +94,11 @@ fn alex_expands_src(world: &mut FileTreeWorld) {
 fn alex_closes_and_reopens(world: &mut FileTreeWorld) {
     if let Some(app) = world.app.as_mut() {
         // Close: hide and unfocus the sidebar.
-        app.editor.file_tree_visible = false;
-        app.editor.file_tree_focused = false;
+        app.editor.left_sidebar.visible = false;
+        app.editor.left_sidebar.focused = false;
         // Reopen: make visible again (tree state is preserved in app.editor.file_tree).
-        app.editor.file_tree_visible = true;
-        app.editor.file_tree_focused = true;
+        app.editor.left_sidebar.visible = true;
+        app.editor.left_sidebar.focused = true;
     }
 }
 
@@ -115,10 +115,10 @@ fn alex_presses_space_e(world: &mut FileTreeWorld) {
     }
     let root = world.workspace_dir.path().to_path_buf();
     let app = world.app.as_mut().unwrap();
-    let new_visible = !app.editor.file_tree_visible;
-    app.editor.file_tree_visible = new_visible;
+    let new_visible = !app.editor.left_sidebar.visible;
+    app.editor.left_sidebar.visible = new_visible;
     if new_visible {
-        app.editor.file_tree_focused = true;
+        app.editor.left_sidebar.focused = true;
         if app.editor.file_tree.is_none() {
             let config = FileTreeConfig { hidden: false, ..FileTreeConfig::default() };
             if let Ok(tree) = FileTree::new(root, &config) {
@@ -126,7 +126,7 @@ fn alex_presses_space_e(world: &mut FileTreeWorld) {
             }
         }
     } else {
-        app.editor.file_tree_focused = false;
+        app.editor.left_sidebar.focused = false;
     }
 }
 
@@ -140,8 +140,8 @@ fn sidebar_reappears(_world: &mut FileTreeWorld) {
 #[when("Alex presses ctrl-w h")]
 fn alex_presses_ctrl_w_h(world: &mut FileTreeWorld) {
     if let Some(app) = world.app.as_mut() {
-        if app.editor.file_tree_visible && !app.editor.file_tree_focused {
-            app.editor.file_tree_focused = true;
+        if app.editor.left_sidebar.visible && !app.editor.left_sidebar.focused {
+            app.editor.left_sidebar.focused = true;
         }
     }
 }
@@ -151,7 +151,7 @@ fn alex_presses_ctrl_w_h(world: &mut FileTreeWorld) {
 #[when("Alex presses ctrl-w l")]
 fn alex_presses_ctrl_w_l(world: &mut FileTreeWorld) {
     if let Some(app) = world.app.as_mut() {
-        app.editor.file_tree_focused = false;
+        app.editor.left_sidebar.focused = false;
     }
 }
 
@@ -159,8 +159,8 @@ fn alex_presses_ctrl_w_l(world: &mut FileTreeWorld) {
 #[when("Alex presses q")]
 fn alex_presses_q(world: &mut FileTreeWorld) {
     if let Some(app) = world.app.as_mut() {
-        app.editor.file_tree_visible = false;
-        app.editor.file_tree_focused = false;
+        app.editor.left_sidebar.visible = false;
+        app.editor.left_sidebar.focused = false;
     }
 }
 
@@ -168,7 +168,7 @@ fn alex_presses_q(world: &mut FileTreeWorld) {
 #[when("Alex presses escape")]
 fn alex_presses_escape(world: &mut FileTreeWorld) {
     if let Some(app) = world.app.as_mut() {
-        app.editor.file_tree_focused = false;
+        app.editor.left_sidebar.focused = false;
     }
 }
 
@@ -347,8 +347,8 @@ fn alex_runs_reveal(world: &mut FileTreeWorld) {
             app.editor.file_tree = Some(tree);
         }
     }
-    app.editor.file_tree_visible = true;
-    app.editor.file_tree_focused = true;
+    app.editor.left_sidebar.visible = true;
+    app.editor.left_sidebar.focused = true;
     let config = app.editor.config().file_tree.clone();
     if let Some(tree) = app.editor.file_tree.as_mut() {
         tree.reveal_path_sync(&path, &config);

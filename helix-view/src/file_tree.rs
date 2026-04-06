@@ -49,7 +49,7 @@ impl Default for FileTreeConfig {
             auto_open: false,
             width: 30,
             hidden: true,
-            git_ignore: true,
+            git_ignore: false,
             git_status: true,
             follow_current_file: true,
             follow_symlinks: false,
@@ -70,6 +70,7 @@ pub enum GitStatus {
     Clean,
     Untracked,
     Added,
+    Staged,
     Modified,
     Conflict,
     Deleted,
@@ -82,10 +83,11 @@ impl GitStatus {
             GitStatus::Clean => 0,
             GitStatus::Untracked => 1,
             GitStatus::Added => 2,
-            GitStatus::Renamed => 3,
-            GitStatus::Deleted => 4,
-            GitStatus::Modified => 5,
-            GitStatus::Conflict => 6,
+            GitStatus::Staged => 3,
+            GitStatus::Renamed => 4,
+            GitStatus::Deleted => 5,
+            GitStatus::Modified => 6,
+            GitStatus::Conflict => 7,
         }
     }
 }
@@ -205,6 +207,9 @@ pub struct FileTree {
     visible_dirty: bool,
     pub(crate) selected: usize,
     scroll_offset: usize,
+    /// Last known viewport height, updated by `clamp_scroll` on each render.
+    /// Used by scroll functions to keep the selection within the visible range.
+    viewport_height: usize,
 
     /// Sender half — cloned into background tasks.
     update_tx: mpsc::Sender<FileTreeUpdate>,
@@ -215,11 +220,10 @@ pub struct FileTree {
     git_status_map: HashMap<PathBuf, GitStatus>,
     /// Pre-computed worst status per directory path.
     dir_status_cache: HashMap<PathBuf, GitStatus>,
-    /// Set to true when `GitStatusBegin` is received; cleared after the map
-    /// is wiped on the next incoming `GitStatus` message.
-    git_status_refresh_pending: bool,
-    /// Hash of the last raw git status output for change detection.
-    last_git_status_hash: Option<u64>,
+    /// Set to true when `git_status_map` changes or new nodes are loaded,
+    /// so `rebuild_dir_status_cache` runs once at the end of `process_updates`
+    /// rather than once per incoming message.
+    git_status_dirty: bool,
     /// Debounce timer for git status refresh (1000ms).
     git_refresh_deadline: Option<Instant>,
     /// Debounce state for follow-current-file (100ms).
@@ -260,6 +264,24 @@ impl std::fmt::Debug for FileTree {
             .field("selected", &self.selected)
             .finish()
     }
+}
+
+/// Build a shallow `ignore::Walk` for one level of a directory, applying
+/// all ignore-file options from the config in a single place.
+fn build_dir_walker(path: &Path, config: &FileTreeConfig) -> ignore::Walk {
+    ignore::WalkBuilder::new(path)
+        .hidden(!config.hidden)
+        .parents(config.git_ignore)
+        .ignore(config.git_ignore)
+        .git_ignore(config.git_ignore)
+        .git_global(config.git_ignore)
+        .git_exclude(config.git_ignore)
+        .follow_links(config.follow_symlinks)
+        .max_depth(Some(1))
+        .sort_by_file_name(|a, b| a.cmp(b))
+        .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
+        .add_custom_ignore_filename(".helix/ignore")
+        .build()
 }
 
 impl FileTree {
@@ -308,12 +330,12 @@ impl FileTree {
             visible_dirty: false,
             selected: 0,
             scroll_offset: 0,
+            viewport_height: 0,
             update_tx,
             update_rx,
             git_status_map: HashMap::new(),
             dir_status_cache: HashMap::new(),
-            git_status_refresh_pending: false,
-            last_git_status_hash: None,
+            git_status_dirty: false,
             git_refresh_deadline: None,
             follow_target: None,
             follow_deadline: None,
@@ -333,6 +355,9 @@ impl FileTree {
         // first render. A depth-1 walk is fast (milliseconds).
         tree.load_children_sync(root_id, config);
         tree.rebuild_visible();
+        // Schedule the first git status scan. The scan fires after the debounce
+        // period expires during the first `process_updates` call.
+        tree.request_git_refresh();
 
         Ok(tree)
     }
@@ -354,12 +379,12 @@ impl FileTree {
             visible_dirty: true,
             selected: 0,
             scroll_offset: 0,
+            viewport_height: 0,
             update_tx,
             update_rx,
             git_status_map: HashMap::new(),
             dir_status_cache: HashMap::new(),
-            git_status_refresh_pending: false,
-            last_git_status_hash: None,
+            git_status_dirty: false,
             git_refresh_deadline: None,
             follow_target: None,
             follow_deadline: None,
@@ -540,6 +565,27 @@ impl FileTree {
         self.nodes.remove(id);
     }
 
+    /// Force the git refresh deadline into the past so the next
+    /// `process_updates` call fires the scan immediately. Intended for tests
+    /// that need to simulate elapsed debounce time without sleeping.
+    pub fn force_git_refresh_deadline_past(&mut self) {
+        if self.git_refresh_deadline.is_some() {
+            self.git_refresh_deadline = Some(Instant::now() - Duration::from_secs(1));
+        }
+    }
+
+    /// Clear the git status map as if a new refresh cycle had started.
+    /// Use in tests to verify stale entries are removed between cycles.
+    pub fn clear_git_status_map_for_test(&mut self) {
+        self.git_status_map.clear();
+        self.git_status_dirty = true;
+    }
+
+    /// Returns `true` when no git status entries have been received yet.
+    pub fn git_status_map_is_empty(&self) -> bool {
+        self.git_status_map.is_empty()
+    }
+
     /// Synchronously re-scan all expanded directories, replacing stale node
     /// entries with fresh data from disk. Use in test contexts instead of
     /// [`refresh`] (which is async).
@@ -648,20 +694,10 @@ impl FileTree {
     fn spawn_load_children(&self, node_id: NodeId, config: &FileTreeConfig) {
         let path = self.node_path(node_id);
         let tx = self.update_tx.clone();
-        let hidden = config.hidden;
-        let git_ignore = config.git_ignore;
-        let follow_symlinks = config.follow_symlinks;
+        let config = config.clone();
 
         tokio::task::spawn_blocking(move || {
-            let walker = ignore::WalkBuilder::new(&path)
-                .hidden(!hidden)
-                .git_ignore(git_ignore)
-                .follow_links(follow_symlinks)
-                .max_depth(Some(1))
-                .sort_by_file_name(|a, b| a.cmp(b))
-                .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
-                .add_custom_ignore_filename(".helix/ignore")
-                .build();
+            let walker = build_dir_walker(&path, &config);
 
             let mut entries = Vec::new();
             for result in walker {
@@ -707,15 +743,7 @@ impl FileTree {
     /// Read one level of a directory's children from disk, returning
     /// `(name, kind)` pairs without modifying the node graph.
     fn read_dir_entries(&self, path: &std::path::Path, config: &FileTreeConfig) -> Vec<(String, NodeKind)> {
-        let walker = ignore::WalkBuilder::new(path)
-            .hidden(!config.hidden)
-            .git_ignore(config.git_ignore)
-            .follow_links(config.follow_symlinks)
-            .max_depth(Some(1))
-            .sort_by_file_name(|a, b| a.cmp(b))
-            .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
-            .add_custom_ignore_filename(".helix/ignore")
-            .build();
+        let walker = build_dir_walker(path, config);
 
         let mut entries = Vec::new();
         for result in walker {
@@ -739,15 +767,7 @@ impl FileTree {
     /// initial root load so the tree is populated on first render.
     fn load_children_sync(&mut self, node_id: NodeId, config: &FileTreeConfig) {
         let path = self.node_path(node_id);
-        let walker = ignore::WalkBuilder::new(&path)
-            .hidden(!config.hidden)
-            .git_ignore(config.git_ignore)
-            .follow_links(config.follow_symlinks)
-            .max_depth(Some(1))
-            .sort_by_file_name(|a, b| a.cmp(b))
-            .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
-            .add_custom_ignore_filename(".helix/ignore")
-            .build();
+        let walker = build_dir_walker(&path, config);
 
         let depth = self.nodes.get(node_id).map(|n| n.depth + 1).unwrap_or(1);
         let mut child_ids = Vec::new();
@@ -790,6 +810,13 @@ impl FileTree {
         if let Some(node) = self.nodes.get_mut(node_id) {
             node.children = child_ids;
             node.loaded = true;
+        }
+
+        // New nodes start with cached_git_status = Clean. If git status has
+        // already been fetched, mark the cache dirty so rebuild_dir_status_cache
+        // runs on the next process_updates and assigns the correct status.
+        if !self.git_status_map.is_empty() {
+            self.git_status_dirty = true;
         }
     }
 
@@ -865,37 +892,35 @@ impl FileTree {
                     }
 
                     if let Some(parent_node) = self.nodes.get_mut(parent) {
-                        parent_node.children = child_ids;
+                        parent_node.children = child_ids.clone();
                         parent_node.loaded = true;
                     }
+
+                    // If a directory child was previously expanded but its old
+                    // NodeId was replaced (race: parent rescanned while child
+                    // load was in flight), the ChildrenLoaded for the old ID
+                    // was silently dropped. Re-spawn the load so the child's
+                    // files appear without requiring another user interaction.
+                    for child_id in child_ids {
+                        if let Some(node) = self.nodes.get(child_id) {
+                            if node.expanded && !node.loaded {
+                                self.spawn_load_children(child_id, config);
+                            }
+                        }
+                    }
+
                     self.visible_dirty = true;
+                    self.git_status_dirty = true;
                 }
                 FileTreeUpdate::GitStatusBegin => {
-                    self.git_status_refresh_pending = true;
+                    // The map is cleared eagerly in spawn_git_status, so this
+                    // message is a no-op. Kept as a variant for compatibility.
                 }
                 FileTreeUpdate::GitStatus(statuses) => {
-                    if self.git_status_refresh_pending {
-                        self.git_status_map.clear();
-                        self.git_status_refresh_pending = false;
-                    }
                     for (path, status) in statuses {
                         self.git_status_map.insert(path, status);
                     }
-
-                    use std::hash::{Hash, Hasher};
-                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                    let mut entries: Vec<_> = self.git_status_map.iter().collect();
-                    entries.sort_by_key(|(p, _)| (*p).clone());
-                    for (path, status) in &entries {
-                        path.hash(&mut hasher);
-                        status.severity().hash(&mut hasher);
-                    }
-                    let new_hash = hasher.finish();
-
-                    if self.last_git_status_hash != Some(new_hash) {
-                        self.last_git_status_hash = Some(new_hash);
-                        self.rebuild_dir_status_cache();
-                    }
+                    self.git_status_dirty = true;
                 }
                 FileTreeUpdate::ScanError { path, reason } => {
                     log::warn!("file tree: {}: {}", path.display(), reason);
@@ -914,6 +939,7 @@ impl FileTree {
                     if let Some(path) = select_path {
                         self.pending_reveal = Some(path);
                     }
+                    self.request_git_refresh();
                 }
                 FileTreeUpdate::FsOpError { message } => {
                     self.set_status(message);
@@ -930,6 +956,7 @@ impl FileTree {
                     }
                     self.pending_reveal = Some(path.clone());
                     self.pending_open = Some(path);
+                    self.request_git_refresh();
                 }
                 FileTreeUpdate::ExternalChange { dir } => {
                     // Find the closest loaded ancestor node for this directory
@@ -951,6 +978,7 @@ impl FileTree {
                         }
                         self.spawn_load_children(id, config);
                     }
+                    self.request_git_refresh();
                 }
             }
         }
@@ -958,6 +986,11 @@ impl FileTree {
         // Retry pending reveal after directory loads complete
         if let Some(path) = self.pending_reveal.take() {
             self.reveal_path(&path, config);
+        }
+
+        if self.git_status_dirty {
+            self.git_status_dirty = false;
+            self.rebuild_dir_status_cache();
         }
 
         if self.visible_dirty {
@@ -1125,16 +1158,31 @@ impl FileTree {
         self.ensure_selected_visible();
     }
 
-    /// Scroll viewport up by one line without moving selection.
+    /// Scroll the viewport up one line, keeping the selection within the new
+    /// visible range. If the selection would go below the bottom of the viewport
+    /// it is snapped to the last visible row.
     pub fn scroll_view_up(&mut self) {
         self.scroll_offset = self.scroll_offset.saturating_sub(1);
+        if self.viewport_height > 0 {
+            let last_visible = (self.scroll_offset + self.viewport_height)
+                .saturating_sub(1)
+                .min(self.visible.len().saturating_sub(1));
+            if self.selected > last_visible {
+                self.selected = last_visible;
+            }
+        }
     }
 
-    /// Scroll viewport down by one line without moving selection.
+    /// Scroll the viewport down one line, keeping the selection within the new
+    /// visible range. If the selection would go above the top of the viewport
+    /// it is snapped to the first visible row.
     pub fn scroll_view_down(&mut self) {
         let max = self.visible.len().saturating_sub(1);
         if self.scroll_offset < max {
             self.scroll_offset += 1;
+            if self.selected < self.scroll_offset {
+                self.selected = self.scroll_offset;
+            }
         }
     }
 
@@ -1406,6 +1454,7 @@ impl FileTree {
         let parent_dir = self.selected_dir_path().unwrap_or_else(|| self.root.clone());
         self.pre_prompt_selected = self.selected;
         self.prompt_input.clear();
+        self.prompt_cursor = 0;
         self.prompt_mode = PromptMode::NewFile { parent_dir };
     }
 
@@ -1415,6 +1464,7 @@ impl FileTree {
         let parent_dir = self.selected_dir_path().unwrap_or_else(|| self.root.clone());
         self.pre_prompt_selected = self.selected;
         self.prompt_input.clear();
+        self.prompt_cursor = 0;
         self.prompt_mode = PromptMode::NewDir { parent_dir };
     }
 
@@ -1449,6 +1499,7 @@ impl FileTree {
         let is_dir = self.nodes.get(id).map(|n| n.kind == NodeKind::Directory).unwrap_or(false);
         self.pre_prompt_selected = self.selected;
         self.prompt_input.clear();
+        self.prompt_cursor = 0;
         self.prompt_mode = PromptMode::DeleteConfirm { id, is_dir };
     }
 
@@ -1543,6 +1594,7 @@ impl FileTree {
         if viewport_height == 0 {
             return;
         }
+        self.viewport_height = viewport_height;
         if self.selected >= self.scroll_offset + viewport_height {
             self.scroll_offset = self.selected - viewport_height + 1;
         }
@@ -1694,6 +1746,11 @@ impl FileTree {
         self.git_refresh_deadline = Some(Instant::now() + Self::GIT_REFRESH_DEBOUNCE);
     }
 
+    /// Returns `true` if a git status refresh is scheduled but has not fired yet.
+    pub fn has_pending_git_refresh(&self) -> bool {
+        self.git_refresh_deadline.is_some()
+    }
+
     /// Queue a follow-current-file reveal. Only sets the deadline once so
     /// repeated calls (e.g. every render frame) don't push it forward forever.
     /// Skips queueing while a pending_reveal is still being resolved.
@@ -1711,7 +1768,9 @@ impl FileTree {
         if let Some(deadline) = self.git_refresh_deadline {
             if Instant::now() >= deadline {
                 self.git_refresh_deadline = None;
-                self.spawn_git_status(diff_providers.clone());
+                // Clone before the mutable borrow so the compiler is happy.
+                let providers = diff_providers.clone();
+                self.spawn_git_status(providers);
             }
         }
     }
@@ -1728,19 +1787,23 @@ impl FileTree {
     }
 
     /// Spawn a background task to collect git status for all changed files.
-    fn spawn_git_status(&self, diff_providers: DiffProviderRegistry) {
+    fn spawn_git_status(&mut self, diff_providers: DiffProviderRegistry) {
+        // Clear stale entries eagerly on the calling thread before the scan
+        // starts. Sending `GitStatusBegin` through the channel was unreliable
+        // because `try_send` silently drops the message when the channel is
+        // full, leaving stale entries from the previous cycle in the map.
+        self.git_status_map.clear();
+        self.git_status_dirty = true;
+
         let tx = self.update_tx.clone();
         let root = self.root.clone();
-
-        // Signal that a new refresh cycle is starting so stale entries from
-        // the previous cycle are discarded when the first result arrives.
-        let _ = tx.try_send(FileTreeUpdate::GitStatusBegin);
 
         diff_providers.for_each_changed_file(root, move |result| {
             if let Ok(change) = result {
                 let status = match &change {
                     FileChange::Untracked { .. } => GitStatus::Untracked,
                     FileChange::Added { .. } => GitStatus::Added,
+                    FileChange::Staged { .. } => GitStatus::Staged,
                     FileChange::Modified { .. } => GitStatus::Modified,
                     FileChange::Deleted { .. } => GitStatus::Deleted,
                     FileChange::Renamed { .. } => GitStatus::Renamed,
@@ -1888,7 +1951,8 @@ mod tests {
     fn test_git_status_severity_ordering() {
         assert!(GitStatus::Clean.severity() < GitStatus::Untracked.severity());
         assert!(GitStatus::Untracked.severity() < GitStatus::Added.severity());
-        assert!(GitStatus::Added.severity() < GitStatus::Renamed.severity());
+        assert!(GitStatus::Added.severity() < GitStatus::Staged.severity());
+        assert!(GitStatus::Staged.severity() < GitStatus::Renamed.severity());
         assert!(GitStatus::Renamed.severity() < GitStatus::Deleted.severity());
         assert!(GitStatus::Deleted.severity() < GitStatus::Modified.severity());
         assert!(GitStatus::Modified.severity() < GitStatus::Conflict.severity());
@@ -1983,20 +2047,10 @@ mod tests {
 
         // Manually call the spawn logic by sending on our tx
         let config = FileTreeConfig::default();
-        let hidden = config.hidden;
-        let git_ignore = config.git_ignore;
-        let follow_symlinks = config.follow_symlinks;
         let path = root_path.clone();
 
         tokio::task::spawn_blocking(move || {
-            // Replicate the same logic as spawn_load_children
-            let walker = ignore::WalkBuilder::new(&path)
-                .hidden(!hidden)
-                .git_ignore(git_ignore)
-                .follow_links(follow_symlinks)
-                .max_depth(Some(1))
-                .sort_by_file_name(|a, b| a.cmp(b))
-                .build();
+            let walker = build_dir_walker(&path, &config);
 
             let mut entries: Vec<(String, NodeKind)> = Vec::new();
             for result in walker {

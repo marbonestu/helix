@@ -4,6 +4,7 @@ mod file_deletion_steps;
 mod file_open_split_steps;
 mod file_rename_steps;
 mod file_watching_steps;
+mod git_status_steps;
 mod navigation_steps;
 mod search_steps;
 mod sidebar_steps;
@@ -147,7 +148,7 @@ fn given_sidebar_visible(world: &mut FileTreeWorld) {
         if !is_visible {
             let root = world.workspace_dir.path().to_path_buf();
             let app = world.app.as_mut().unwrap();
-            app.editor.file_tree_visible = true;
+            app.editor.left_sidebar.visible = true;
             if app.editor.file_tree.is_none() {
                 let config = helix_view::file_tree::FileTreeConfig {
                     hidden: false,
@@ -177,7 +178,7 @@ fn given_sidebar_visible_and_focused(world: &mut FileTreeWorld) {
             .unwrap_or(false);
         if !is_visible {
             let app = world.app.as_mut().unwrap();
-            app.editor.file_tree_visible = true;
+            app.editor.left_sidebar.visible = true;
             if app.editor.file_tree.is_none() {
                 let config = helix_view::file_tree::FileTreeConfig {
                     hidden: false,

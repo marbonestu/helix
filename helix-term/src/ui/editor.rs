@@ -3,7 +3,7 @@ use crate::{
     compositor::{Component, Context, Event, EventResult},
     events::{OnModeSwitch, PostCommand},
     handlers::completion::CompletionItem,
-    key,
+    ctrl, key,
     keymap::{KeymapResult, Keymaps},
     ui::{
         document::{render_document, LinePos, TextRenderer},
@@ -46,6 +46,13 @@ pub struct EditorView {
     terminal_focused: bool,
     /// Tracks the last sidebar click (visible index, time) for double-click detection
     last_sidebar_click: Option<(usize, Instant)>,
+    /// Accumulated numeric count for the next file-tree navigation command (e.g. `5j`).
+    file_tree_count: Option<NonZeroUsize>,
+    /// Terminal cursor position for the selected file-tree row, updated each frame.
+    file_tree_cursor: Option<helix_core::Position>,
+    /// Pending multi-key sequence in the file tree (e.g. `space`, `space g`).
+    /// Stored as `KeyEvent`s so they can be fed directly to `KeyTrie::search`.
+    file_tree_seq: Vec<KeyEvent>,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +77,9 @@ impl EditorView {
             spinners: ProgressSpinners::default(),
             terminal_focused: true,
             last_sidebar_click: None,
+            file_tree_count: None,
+            file_tree_cursor: None,
+            file_tree_seq: Vec::new(),
         }
     }
 
@@ -1667,40 +1677,192 @@ impl EditorView {
             }
         }
 
-        // If C-w was pressed on the previous keypress, interpret this key as a
-        // window command without passing anything through to the normal keymap.
-        // This prevents C-w from clearing sidebar focus before > / < arrive.
+        // If C-w was pressed on the previous keypress, intercept only the
+        // sidebar-resize keys (> / <). All other keys are forwarded to normal
+        // mode by replaying the full C-w + follow-up key sequence, so that
+        // window commands like `C-w q` (wclose) or `C-w s` (hsplit) work
+        // transparently from the file tree.
         if cx.editor.left_sidebar.window_cmd_pending {
             cx.editor.left_sidebar.window_cmd_pending = false;
-            let count = cx.count() as u16;
             return match key.code {
                 KeyCode::Char('>') => {
-                    cx.editor.left_sidebar.grow(count);
+                    cx.editor.left_sidebar.grow(cx.count() as u16);
                     EventResult::Consumed(None)
                 }
                 KeyCode::Char('<') => {
-                    cx.editor.left_sidebar.shrink(count);
+                    cx.editor.left_sidebar.shrink(cx.count() as u16);
                     EventResult::Consumed(None)
                 }
-                // Navigation: unfocus the sidebar so the user can follow up with
-                // a normal-mode navigation key to reach the target split.
                 _ => {
                     cx.editor.left_sidebar.focused = false;
+                    cx.callback.push(Box::new(move |compositor, cx| {
+                        compositor.handle_event(&Event::Key(ctrl!('w')), cx);
+                        compositor.handle_event(&Event::Key(key), cx);
+                    }));
                     EventResult::Consumed(None)
                 }
             };
         }
 
+        // --- Keymap-driven scroll: runs before the match for modifier-key chords ---
+        // When a modifier key (e.g. C-e, C-d) is remapped in the user's normal-mode
+        // keymap to a scroll command or macro sequence, mirror that in the file tree.
+        // This lets custom bindings like `C-e = "@9zj"` or `C-d = "@5j"` work here.
+        if !key.modifiers.is_empty() {
+            use helix_view::document::Mode;
+            use crate::keymap::KeyTrie;
+            use crate::commands::MappableCommand;
+
+            let trie_entry = {
+                let map = self.keymaps.map();
+                map.get(&Mode::Normal)
+                    .and_then(|trie| trie.search(&[key]))
+                    .cloned()
+            };
+
+            if let Some(trie) = trie_entry {
+                match trie {
+                    KeyTrie::MappableCommand(MappableCommand::Static { name, .. }) => {
+                        let height = cx.editor.tree.area().height as usize;
+                        let count = self.file_tree_count.take().map_or(1, |n| n.get());
+                        let half = (height / 2).max(1);
+                        let full = height.max(1);
+                        let handled = match name {
+                            "page_cursor_half_up" => {
+                                if let Some(ref mut tree) = cx.editor.file_tree {
+                                    tree.page_up((half * count).max(1));
+                                }
+                                true
+                            }
+                            "page_cursor_half_down" => {
+                                if let Some(ref mut tree) = cx.editor.file_tree {
+                                    tree.page_down((half * count).max(1));
+                                }
+                                true
+                            }
+                            "page_up" => {
+                                if let Some(ref mut tree) = cx.editor.file_tree {
+                                    tree.page_up((full * count).max(1));
+                                }
+                                true
+                            }
+                            "page_down" => {
+                                if let Some(ref mut tree) = cx.editor.file_tree {
+                                    tree.page_down((full * count).max(1));
+                                }
+                                true
+                            }
+                            "scroll_up" => {
+                                if let Some(ref mut tree) = cx.editor.file_tree {
+                                    for _ in 0..count { tree.scroll_view_up(); }
+                                }
+                                true
+                            }
+                            "scroll_down" => {
+                                if let Some(ref mut tree) = cx.editor.file_tree {
+                                    for _ in 0..count { tree.scroll_view_down(); }
+                                }
+                                true
+                            }
+                            _ => false,
+                        };
+                        if handled {
+                            return EventResult::Consumed(None);
+                        }
+                    }
+                    KeyTrie::MappableCommand(MappableCommand::Macro { keys, .. }) => {
+                        // Replay macro keys through the compositor so they re-enter
+                        // this handler. Count-then-action sequences (e.g. `@5j` →
+                        // keys [5, j]) then work naturally: digit accumulates the
+                        // count, j/k consume it.
+                        self.file_tree_count = None;
+                        cx.callback.push(Box::new(move |compositor, cx| {
+                            for k in keys {
+                                compositor.handle_event(&Event::Key(k), cx);
+                            }
+                        }));
+                        return EventResult::Consumed(None);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Multi-key sequence handler.
+        // `space` enters "command sequence" mode; subsequent keys are looked up
+        // in the normal-mode keymap trie so any command the user has bound under
+        // `space` (e.g. `space g o f`) works in the file tree without hardcoding.
+        let is_space = key.modifiers.is_empty() && key.code == KeyCode::Char(' ');
+        let in_seq   = !self.file_tree_seq.is_empty();
+
+        if is_space || in_seq {
+            if key.code == KeyCode::Esc {
+                self.file_tree_seq.clear();
+                return EventResult::Consumed(None);
+            }
+
+            // Only plain (non-modifier) chars extend a sequence.
+            if key.modifiers.is_empty() {
+                self.file_tree_seq.push(key);
+
+                use crate::keymap::KeyTrie;
+                use crate::commands::MappableCommand;
+
+                let trie_entry = {
+                    let map = self.keymaps.map();
+                    map.get(&helix_view::document::Mode::Normal)
+                        .and_then(|trie| trie.search(&self.file_tree_seq))
+                        .cloned()
+                };
+
+                match trie_entry {
+                    // Partial match — wait for more keys.
+                    Some(KeyTrie::Node(_)) => return EventResult::Consumed(None),
+
+                    // Full match: static command — execute in file tree context.
+                    Some(KeyTrie::MappableCommand(MappableCommand::Static { name, .. })) => {
+                        self.file_tree_seq.clear();
+                        self.file_tree_count = None;
+                        self.handle_file_tree_command(name, cx);
+                        return EventResult::Consumed(None);
+                    }
+
+                    // Full match: macro — replay the key sequence.
+                    Some(KeyTrie::MappableCommand(MappableCommand::Macro { keys, .. })) => {
+                        self.file_tree_seq.clear();
+                        self.file_tree_count = None;
+                        cx.callback.push(Box::new(move |compositor, cx| {
+                            for k in keys {
+                                compositor.handle_event(&Event::Key(k), cx);
+                            }
+                        }));
+                        return EventResult::Consumed(None);
+                    }
+
+                    // No match or other trie variant — abort sequence, eat the key.
+                    _ => {
+                        self.file_tree_seq.clear();
+                        return EventResult::Consumed(None);
+                    }
+                }
+            } else {
+                // Modifier key while in a sequence → abort; fall through to normal handling.
+                self.file_tree_seq.clear();
+            }
+        }
+
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
+                let count = self.file_tree_count.take().map_or(1, |n| n.get());
                 if let Some(ref mut tree) = cx.editor.file_tree {
-                    tree.move_down();
+                    for _ in 0..count { tree.move_down(); }
                 }
                 EventResult::Consumed(None)
             }
             KeyCode::Char('k') | KeyCode::Up => {
+                let count = self.file_tree_count.take().map_or(1, |n| n.get());
                 if let Some(ref mut tree) = cx.editor.file_tree {
-                    tree.move_up();
+                    for _ in 0..count { tree.move_up(); }
                 }
                 EventResult::Consumed(None)
             }
@@ -1897,6 +2059,22 @@ impl EditorView {
                 }
                 EventResult::Consumed(None)
             }
+            KeyCode::Char('Y') => {
+                if let Some(id) = cx.editor.file_tree.as_ref().and_then(|t| t.selected_id()) {
+                    let path_str = cx.editor.file_tree.as_ref().unwrap()
+                        .node_path(id).to_string_lossy().into_owned();
+                    let status = format!("Copied path: {path_str}");
+                    match cx.editor.registers.write('+', vec![path_str]) {
+                        Ok(_) => {
+                            if let Some(ref mut tree) = cx.editor.file_tree {
+                                tree.set_status(status);
+                            }
+                        }
+                        Err(err) => cx.editor.set_error(err.to_string()),
+                    }
+                }
+                EventResult::Consumed(None)
+            }
             KeyCode::Char('x') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(ref mut tree) = cx.editor.file_tree {
                     if let Some(id) = tree.selected_id() {
@@ -2054,7 +2232,62 @@ impl EditorView {
                 }
                 EventResult::Consumed(None)
             }
-            _ => EventResult::Consumed(None),
+            // Numeric prefix: accumulate a repeat count for the next j/k action.
+            KeyCode::Char(c) if c.is_ascii_digit() && key.modifiers.is_empty() => {
+                let digit = (c as usize) - ('0' as usize);
+                self.file_tree_count = Some(
+                    NonZeroUsize::new(
+                        self.file_tree_count
+                            .map_or(0, |n| n.get().saturating_mul(10))
+                            .saturating_add(digit)
+                            .max(1),
+                    )
+                    .unwrap(),
+                );
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('z') if key.modifiers.is_empty() => {
+                // `z` is a no-op separator used in macro sequences like `@9zj`.
+                // Preserving the accumulated count lets the next j/k consume it.
+                EventResult::Consumed(None)
+            }
+            _ => {
+                self.file_tree_count = None;
+                EventResult::Consumed(None)
+            }
+        }
+    }
+
+    /// Execute a named Helix command in the file tree context.
+    ///
+    /// Commands that don't make sense without a cursor position (e.g. line-
+    /// based git open) are adapted: the file tree has no line concept so the
+    /// line argument is omitted.
+    fn handle_file_tree_command(&mut self, name: &'static str, cx: &mut commands::Context) {
+        match name {
+            "git_open_file_in_browser" | "git_open_line_in_browser" => {
+                let path = cx.editor.file_tree.as_ref().and_then(|tree| {
+                    let id = tree.selected_id()?;
+                    Some(tree.node_path(id).to_path_buf())
+                });
+                if let Some(path) = path {
+                    match commands::git_web_url_for_path(&path, None) {
+                        Ok(url) => {
+                            #[cfg(target_os = "macos")]
+                            let opener = "open";
+                            #[cfg(not(target_os = "macos"))]
+                            let opener = "xdg-open";
+                            match std::process::Command::new(opener).arg(&url).spawn() {
+                                Ok(_)  => cx.editor.set_status(format!("Opening: {url}")),
+                                Err(e) => cx.editor.set_error(format!("Cannot open browser: {e}")),
+                            }
+                        }
+                        Err(e) => cx.editor.set_error(e.to_string()),
+                    }
+                }
+            }
+            // Add more file-tree-adapted commands here as needed.
+            _ => {}
         }
     }
 
@@ -2459,9 +2692,10 @@ impl Component for EditorView {
             Self::render_bufferline(cx.editor, area.with_height(1), surface);
         }
 
+        let sidebar_focused = cx.editor.left_sidebar.focused;
         for (view, is_focused) in cx.editor.tree.views() {
             let doc = cx.editor.document(view.doc).unwrap();
-            self.render_view(cx.editor, doc, view, area, surface, is_focused);
+            self.render_view(cx.editor, doc, view, area, surface, is_focused && !sidebar_focused);
         }
 
         // Render file tree sidebar
@@ -2479,6 +2713,12 @@ impl Component for EditorView {
                     cx.editor.left_sidebar.focused,
                     &config.file_tree,
                 );
+                // Track selected row position so cursor() can place the terminal cursor there.
+                let visible_row = tree.selected().saturating_sub(tree.scroll_offset());
+                self.file_tree_cursor = Some(helix_core::Position {
+                    row: sidebar_area.y as usize + visible_row,
+                    col: sidebar_area.x as usize,
+                });
             }
         }
 
@@ -2554,6 +2794,9 @@ impl Component for EditorView {
     }
 
     fn cursor(&self, _area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
+        if editor.left_sidebar.focused {
+            return (self.file_tree_cursor, CursorKind::Block);
+        }
         match editor.cursor() {
             // all block cursors are drawn manually
             (pos, CursorKind::Block) => {

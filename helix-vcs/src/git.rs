@@ -141,7 +141,7 @@ fn status(repo: &Repository, f: impl Fn(Result<FileChange>) -> bool) -> Result<(
     // than O(tree_depth) per entry.
     {
         let index = repo.index_or_empty()?;
-        let head_paths: std::collections::HashSet<gix::bstr::BString> = repo
+        let head_entries: std::collections::HashMap<gix::bstr::BString, gix::ObjectId> = repo
             .head_commit()
             .ok()
             .and_then(|c| c.tree().ok())
@@ -150,18 +150,46 @@ fn status(repo: &Repository, f: impl Fn(Result<FileChange>) -> bool) -> Result<(
                 entries
                     .into_iter()
                     .filter(|e| !e.mode.is_tree())
-                    .map(|e| e.filepath)
+                    .map(|e| (e.filepath, e.oid))
                     .collect()
             })
             .unwrap_or_default();
+
+        // Track which HEAD paths appear in the index to detect staged deletions.
+        let mut seen_in_index: std::collections::HashSet<&[u8]> = std::collections::HashSet::new();
+
         for entry in index.entries() {
             let path_bytes = entry.path(&index);
-            if !head_paths.contains(path_bytes) {
-                let Ok(rel_path) = path_bytes.to_path() else {
+            seen_in_index.insert(path_bytes);
+            let Ok(rel_path) = path_bytes.to_path() else {
+                continue;
+            };
+            let path = work_dir.join(rel_path);
+            match head_entries.get(path_bytes) {
+                None => {
+                    // In index but not HEAD → staged new file.
+                    if !f(Ok(FileChange::Added { path })) {
+                        return Ok(());
+                    }
+                }
+                Some(head_oid) if *head_oid != entry.id => {
+                    // In both, but content differs → staged modification.
+                    if !f(Ok(FileChange::Staged { path })) {
+                        return Ok(());
+                    }
+                }
+                _ => {} // Same OID → not staged.
+            }
+        }
+
+        // Files present in HEAD but absent from the index → staged deletion.
+        for (head_path, _) in &head_entries {
+            if !seen_in_index.contains(head_path.as_slice()) {
+                let Ok(rel_path) = head_path.to_path() else {
                     continue;
                 };
                 let path = work_dir.join(rel_path);
-                if !f(Ok(FileChange::Added { path })) {
+                if !f(Ok(FileChange::Staged { path })) {
                     return Ok(());
                 }
             }

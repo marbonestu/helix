@@ -6,6 +6,8 @@ pub enum FileChange {
     Untracked { path: PathBuf },
     /// New file staged for commit (present in index, absent from HEAD).
     Added { path: PathBuf },
+    /// Existing tracked file staged for commit (index content differs from HEAD).
+    Staged { path: PathBuf },
     /// File has been modified.
     Modified { path: PathBuf },
     /// File modification is in conflict with a different update.
@@ -24,6 +26,7 @@ impl FileChange {
         match self {
             Self::Untracked { path } => path,
             Self::Added { path } => path,
+            Self::Staged { path } => path,
             Self::Modified { path } => path,
             Self::Conflict { path } => path,
             Self::Deleted { path } => path,

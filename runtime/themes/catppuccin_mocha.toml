@@ -130,6 +130,22 @@ hint = "teal"
 
 rainbow = ["red", "peach", "yellow", "green", "sapphire", "lavender"]
 
+# File tree sidebar
+# -----------------
+"ui.sidebar"           = { fg = "text", bg = "mantle" }
+"ui.sidebar.separator" = { fg = "surface0" }
+"ui.sidebar.selected"  = { fg = "text", bg = "surface1" }
+"ui.sidebar.file"      = "text"
+"ui.sidebar.directory" = "blue"
+
+# Git status colors in the sidebar — mirrors Catppuccin's gitsigns palette
+"ui.sidebar.git.modified"  = "yellow"
+"ui.sidebar.git.added"     = "green"
+"ui.sidebar.git.staged"    = "sky"
+"ui.sidebar.git.untracked" = "overlay1"
+"ui.sidebar.git.deleted"   = "red"
+"ui.sidebar.git.conflict"  = "maroon"
+
 [palette]
 rosewater = "#f5e0dc"
 flamingo = "#f2cdcd"

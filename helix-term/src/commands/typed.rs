@@ -4288,7 +4288,69 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
             ..Signature::DEFAULT
         },
     },
+    TypableCommand {
+        name: "git-open",
+        aliases: &["go"],
+        doc: "Open the current file on the git hosting website (GitHub, GitLab, Bitbucket…).",
+        fun: cmd_git_open_file,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "git-open-line",
+        aliases: &["gol"],
+        doc: "Open the current file at the cursor line on the git hosting website.",
+        fun: cmd_git_open_line,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
 ];
+
+fn cmd_git_open_file(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let path = doc!(cx.editor).path().cloned();
+    match path.as_deref().map(|p| git_web_url_for_path(p, None)) {
+        Some(Ok(url))  => open_url_in_browser(&url, cx.editor),
+        Some(Err(e))   => cx.editor.set_error(e.to_string()),
+        None           => cx.editor.set_error("Buffer has no file path"),
+    }
+    Ok(())
+}
+
+fn cmd_git_open_line(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let (view, doc) = current!(cx.editor);
+    let line = doc
+        .selection(view.id)
+        .primary()
+        .cursor_line(doc.text().slice(..))
+        + 1;
+    let path = doc.path().cloned();
+    match path.as_deref().map(|p| git_web_url_for_path(p, Some(line))) {
+        Some(Ok(url))  => open_url_in_browser(&url, cx.editor),
+        Some(Err(e))   => cx.editor.set_error(e.to_string()),
+        None           => cx.editor.set_error("Buffer has no file path"),
+    }
+    Ok(())
+}
 
 pub static TYPABLE_COMMAND_MAP: Lazy<HashMap<&'static str, &'static TypableCommand>> =
     Lazy::new(|| {

@@ -1,6 +1,7 @@
 mod handlers;
 mod query;
 
+use helix_view::input::KeyEvent;
 use crate::{
     alt,
     compositor::{self, Component, Compositor, Context, Event, EventResult},
@@ -259,6 +260,13 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
 
     callback_fn: PickerCallback<T>,
     default_action: Action,
+    /// Extra key-bound actions.  Each entry is (key, callback).
+    /// The callback receives the selected item, a slice of *all currently
+    /// matched items* in display order, and the cursor index within that slice.
+    picker_actions: Vec<(KeyEvent, Box<dyn Fn(&mut Context, &T, &[&T], usize) + 'static>)>,
+    /// When set, called after every `picker_actions` entry to rebuild the item
+    /// list in place so the picker stays open with a refreshed view.
+    refresh_fn: Option<Box<dyn Fn(&Editor) -> Vec<T> + 'static>>,
 
     pub truncate_start: bool,
     /// Caches paths to documents
@@ -387,6 +395,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             show_preview: true,
             callback_fn: Box::new(callback_fn),
             default_action: Action::Replace,
+            picker_actions: Vec::new(),
+            refresh_fn: None,
             completion_height: 0,
             widths,
             preview_cache: HashMap::new(),
@@ -394,6 +404,49 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             file_fn: None,
             preview_highlight_handler: PreviewHighlightHandler::<T, D>::default().spawn(),
             dynamic_query_handler: None,
+        }
+    }
+
+    /// Attach an action callback bound to `key`.
+    /// The callback receives:
+    /// - `ctx`: mutable compositor context
+    /// - `selected`: the item under the cursor
+    /// - `all`: all currently matched items in display order
+    /// - `cursor`: the cursor index within `all`
+    ///
+    /// If a `refresh_fn` is also set, the picker rebuilds its item list in place
+    /// after the action so it stays open.  Otherwise the picker closes.
+    pub fn with_action(
+        mut self,
+        key: KeyEvent,
+        f: impl Fn(&mut Context, &T, &[&T], usize) + 'static,
+    ) -> Self {
+        self.picker_actions.push((key, Box::new(f)));
+        self
+    }
+
+    /// Set the function used to regenerate items after a `with_action` callback.
+    /// When present the picker stays open with a refreshed list; without it the
+    /// picker closes after every action.
+    pub fn with_refresh_fn(mut self, f: impl Fn(&Editor) -> Vec<T> + 'static) -> Self {
+        self.refresh_fn = Some(Box::new(f));
+        self
+    }
+
+    /// Restart the matcher with a fresh item list (used by `with_refresh_fn`).
+    fn refresh_items(&mut self, editor: &Editor) {
+        if let Some(ref refresh_fn) = self.refresh_fn {
+            let items = refresh_fn(editor);
+            self.matcher.restart(true);
+            let injector = self.matcher.injector();
+            for item in items {
+                inject_nucleo_item(&injector, &self.columns, item, &self.editor_data);
+            }
+            // Keep cursor in bounds.
+            let count = self.matcher.snapshot().matched_item_count();
+            if self.cursor >= count {
+                self.cursor = count.saturating_sub(1);
+            }
         }
     }
 
@@ -1159,8 +1212,36 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             ctrl!('t') => {
                 self.toggle_preview();
             }
-            _ => {
-                self.prompt_handle_event(event, ctx);
+            key_event => {
+                // Check picker_actions before falling through to prompt input.
+                let action_idx = self
+                    .picker_actions
+                    .iter()
+                    .position(|(k, _)| *k == key_event);
+
+                if let Some(idx) = action_idx {
+                    let snapshot = self.matcher.snapshot();
+                    let count = snapshot.matched_item_count() as usize;
+                    let cursor = self.cursor as usize;
+                    // Collect all matched items in display order.
+                    let all: Vec<&I> = (0..count as u32)
+                        .filter_map(|i| snapshot.get_matched_item(i).map(|it| it.data))
+                        .collect();
+                    // selected is the item at the cursor.
+                    if let Some(&selected) = all.get(cursor) {
+                        let (_, action_fn) = &self.picker_actions[idx];
+                        action_fn(ctx, selected, &all, cursor);
+                    }
+                    let _ = snapshot;
+
+                    if self.refresh_fn.is_some() {
+                        self.refresh_items(ctx.editor);
+                    } else {
+                        return close_fn(self);
+                    }
+                } else {
+                    self.prompt_handle_event(event, ctx);
+                }
             }
         }
 

@@ -27,8 +27,8 @@ fn ensure_app_with_tree(world: &mut FileTreeWorld) {
             app.editor.file_tree = Some(tree);
         }
     }
-    app.editor.file_tree_visible = true;
-    app.editor.file_tree_focused = true;
+    app.editor.left_sidebar.visible = true;
+    app.editor.left_sidebar.focused = true;
 
     // Navigate to src/main.rs via the tree API.
     let config = app.editor.config().file_tree.clone();
@@ -109,7 +109,7 @@ fn alex_presses_enter(world: &mut FileTreeWorld) {
             app.editor.new_file(Action::VerticalSplit);
         }
         let _ = app.editor.open(&path, Action::Replace);
-        app.editor.file_tree_focused = false;
+        app.editor.left_sidebar.focused = false;
     }
     // When multiple splits exist the picker would be shown (tested separately).
 }
@@ -129,7 +129,7 @@ fn alex_presses_second_label(world: &mut FileTreeWorld) {
     let view_id = second_view.view_id;
     app.editor.focus(view_id);
     let _ = app.editor.open(&main_rs, Action::Replace);
-    app.editor.file_tree_focused = false;
+    app.editor.left_sidebar.focused = false;
 }
 
 #[when("Alex presses escape on the split picker")]
