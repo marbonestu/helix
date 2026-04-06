@@ -46,7 +46,7 @@ use helix_core::{
     text_annotations::TextAnnotations, unicode::segmentation::UnicodeSegmentation, Position,
 };
 use helix_view::{
-    editor::Action,
+    editor::{Action, InputPosition},
     graphics::{CursorKind, Margin, Modifier, Rect},
     theme::Style,
     view::ViewPosition,
@@ -269,6 +269,10 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     refresh_fn: Option<Box<dyn Fn(&Editor) -> Vec<T> + 'static>>,
 
     pub truncate_start: bool,
+    /// Where the input bar is rendered relative to the results list
+    pub input_position: InputPosition,
+    /// Optional label shown as the picker title
+    pub title: Option<String>,
     /// Caches paths to documents
     preview_cache: HashMap<Arc<Path>, CachedPreview>,
     read_buffer: Vec<u8>,
@@ -393,6 +397,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             query,
             truncate_start: true,
             show_preview: true,
+            input_position: InputPosition::Top,
+            title: None,
             callback_fn: Box::new(callback_fn),
             default_action: Action::Replace,
             picker_actions: Vec::new(),
@@ -505,6 +511,18 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
     pub fn with_default_action(mut self, action: Action) -> Self {
         self.default_action = action;
+        self
+    }
+
+    /// Set where the input bar appears: top (default) or bottom.
+    pub fn with_input_position(mut self, pos: InputPosition) -> Self {
+        self.input_position = pos;
+        self
+    }
+
+    /// Set a label displayed in the picker's title border.
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
         self
     }
 
@@ -752,12 +770,27 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let background = cx.editor.theme.get("ui.background");
         surface.clear_with(area, background);
 
-        const BLOCK: Block<'_> = Block::bordered();
+        let block = {
+            use tui::text::Span;
+            let title_style = cx.editor.theme.get("ui.picker.header");
+            let mut b = Block::bordered();
+            if let Some(ref title) = self.title {
+                let label = Spans::from(Span::styled(
+                    format!(" {} ", title),
+                    title_style,
+                ));
+                match self.input_position {
+                    InputPosition::Top => b = b.title(label).title_centered(),
+                    InputPosition::Bottom => b = b.title_bottom(label),
+                }
+            }
+            b
+        };
 
         // calculate the inner area inside the box
-        let inner = BLOCK.inner(area);
+        let inner = block.inner(area);
 
-        BLOCK.render(area, surface);
+        block.render(area, surface);
 
         // -- Render the input bar:
 
@@ -772,32 +805,51 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             snapshot.item_count(),
         );
 
-        let area = inner.clip_left(1).with_height(1);
-        let line_area = area.clip_right(count.len() as u16 + 1);
+        let sep_style = cx.editor.theme.get("ui.background.separator");
+        let borders = BorderType::line_symbols(BorderType::Plain);
+
+        let (input_area, sep_y, results_area) = match self.input_position {
+            InputPosition::Top => {
+                let input_area = inner.clip_left(1).with_height(1);
+                let sep_y = inner.y + 1;
+                let results_area = inner.clip_top(2);
+                (input_area, sep_y, results_area)
+            }
+            InputPosition::Bottom => {
+                let input_y = inner.bottom().saturating_sub(1);
+                let sep_y = inner.bottom().saturating_sub(2);
+                let input_area = Rect::new(
+                    inner.x + 1,
+                    input_y,
+                    inner.width.saturating_sub(1),
+                    1,
+                );
+                let results_area = inner.clip_bottom(2);
+                (input_area, sep_y, results_area)
+            }
+        };
 
         // render the prompt first since it will clear its background
+        let line_area = input_area.clip_right(count.len() as u16 + 1);
         self.prompt.render(line_area, surface, cx);
 
         surface.set_stringn(
-            (area.x + area.width).saturating_sub(count.len() as u16 + 1),
-            area.y,
+            (input_area.x + input_area.width).saturating_sub(count.len() as u16 + 1),
+            input_area.y,
             &count,
-            (count.len()).min(area.width as usize),
+            (count.len()).min(input_area.width as usize),
             text_style,
         );
 
         // -- Separator
-        let sep_style = cx.editor.theme.get("ui.background.separator");
-        let borders = BorderType::line_symbols(BorderType::Plain);
         for x in inner.left()..inner.right() {
-            if let Some(cell) = surface.get_mut(x, inner.y + 1) {
+            if let Some(cell) = surface.get_mut(x, sep_y) {
                 cell.set_symbol(borders.horizontal).set_style(sep_style);
             }
         }
 
         // -- Render the contents:
-        // subtract area of prompt from top
-        let inner = inner.clip_top(2);
+        let inner = results_area;
         let rows = inner.height.saturating_sub(self.header_height()) as u32;
         let offset = self.cursor - (self.cursor % std::cmp::max(1, rows));
         let cursor = self.cursor.saturating_sub(offset);
@@ -811,7 +863,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             matcher.config.set_match_paths()
         }
 
-        let options = snapshot.matched_items(offset..end).map(|item| {
+        let mut options: Vec<Row> = snapshot.matched_items(offset..end).map(|item| {
             let mut widths = self.widths.iter_mut();
             let mut matcher_index = 0;
 
@@ -886,7 +938,18 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
                 cell
             }))
-        });
+        }).collect();
+
+        // When the input is at the bottom, invert the list so item 0 (best match)
+        // sits adjacent to the prompt and items grow upward.
+        let selected_idx = match self.input_position {
+            InputPosition::Bottom => {
+                options.reverse();
+                let visible = (end - offset) as usize;
+                visible.saturating_sub(1).saturating_sub(cursor as usize)
+            }
+            InputPosition::Top => cursor as usize,
+        };
 
         let mut table = Table::new(options)
             .style(text_style)
@@ -927,7 +990,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             surface,
             &mut TableState {
                 offset: 0,
-                selected: Some(cursor as usize),
+                selected: Some(selected_idx),
             },
             self.truncate_start,
         );
@@ -1253,7 +1316,6 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
         // calculate the inner area inside the box
         let inner = block.inner(area);
 
-        // prompt area
         let render_preview =
             self.show_preview && self.file_fn.is_some() && area.width > MIN_AREA_WIDTH_FOR_PREVIEW;
 
@@ -1262,9 +1324,16 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
         } else {
             area.width
         };
-        let area = inner.clip_left(1).with_height(1).with_width(picker_width);
 
-        self.prompt.cursor(area, editor)
+        let cursor_area = match self.input_position {
+            InputPosition::Top => inner.clip_left(1).with_height(1).with_width(picker_width),
+            InputPosition::Bottom => {
+                let y = inner.bottom().saturating_sub(1);
+                Rect::new(inner.x + 1, y, picker_width.saturating_sub(2), 1)
+            }
+        };
+
+        self.prompt.cursor(cursor_area, editor)
     }
 
     fn required_size(&mut self, (width, height): (u16, u16)) -> Option<(u16, u16)> {

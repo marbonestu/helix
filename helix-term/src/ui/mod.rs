@@ -218,9 +218,11 @@ type FilePicker = Picker<PathBuf, FilePickerData>;
 
 pub fn file_picker(editor: &Editor, root: PathBuf) -> FilePicker {
     use ignore::WalkBuilder;
+    use std::collections::HashSet;
     use std::time::Instant;
 
     let config = editor.config();
+    let input_position = config.picker.input_position;
     let data = FilePickerData {
         root: root.clone(),
         directory_style: editor.theme.get("ui.text.directory"),
@@ -257,6 +259,23 @@ pub fn file_picker(editor: &Editor, root: PathBuf) -> FilePicker {
         });
     log::debug!("file_picker init {:?}", Instant::now().duration_since(now));
 
+    // Collect recently accessed file paths (most recent first) to inject before the
+    // filesystem walk so they appear at the top of the initial unfiltered list.
+    let mut mru_seen: HashSet<PathBuf> = HashSet::new();
+    let mru_paths: Vec<PathBuf> = editor
+        .tree
+        .views()
+        .flat_map(|(view, _)| {
+            view.docs_access_history
+                .iter()
+                .rev()
+                .copied()
+                .collect::<Vec<_>>()
+        })
+        .filter_map(|doc_id| editor.documents.get(&doc_id)?.path().cloned())
+        .filter(|path| mru_seen.insert(path.clone()))
+        .collect();
+
     let columns = [PickerColumn::new(
         "path",
         |item: &PathBuf, data: &FilePickerData| {
@@ -286,12 +305,25 @@ pub fn file_picker(editor: &Editor, root: PathBuf) -> FilePicker {
             cx.editor.set_error(err);
         }
     })
-    .with_preview(|_editor, path| Some((path.as_path().into(), None)));
+    .with_preview(|_editor, path| Some((path.as_path().into(), None)))
+    .with_title("Find Files")
+    .with_input_position(input_position);
+
     let injector = picker.injector();
     let timeout = std::time::Instant::now() + std::time::Duration::from_millis(30);
 
+    // Inject MRU files first so they appear at the top when no query is active.
+    for path in &mru_paths {
+        if injector.push(path.clone()).is_err() {
+            return picker;
+        }
+    }
+
     let mut hit_timeout = false;
     for file in &mut files {
+        if mru_seen.contains(&file) {
+            continue;
+        }
         if injector.push(file).is_err() {
             break;
         }
@@ -303,6 +335,9 @@ pub fn file_picker(editor: &Editor, root: PathBuf) -> FilePicker {
     if hit_timeout {
         std::thread::spawn(move || {
             for file in files {
+                if mru_seen.contains(&file) {
+                    continue;
+                }
                 if injector.push(file).is_err() {
                     break;
                 }

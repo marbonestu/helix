@@ -44,8 +44,12 @@ impl BorderType {
 /// ```
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Block<'a> {
-    /// Optional title place on the upper left of the block
+    /// Optional title placed on the upper border
     title: Option<Spans<'a>>,
+    /// When true, the top title is centered rather than left-aligned
+    title_centered: bool,
+    /// Optional title centered on the bottom border
+    title_bottom: Option<Spans<'a>>,
     /// Visible borders
     borders: Borders,
     /// Border style
@@ -61,6 +65,8 @@ impl<'a> Block<'a> {
     pub const fn new() -> Self {
         Self {
             title: None,
+            title_centered: false,
+            title_bottom: None,
             borders: Borders::empty(),
             border_style: Style::new(),
             border_type: BorderType::Plain,
@@ -79,6 +85,21 @@ impl<'a> Block<'a> {
         T: Into<Spans<'a>>,
     {
         self.title = Some(title.into());
+        self
+    }
+
+    /// Center the top title on the border line instead of left-aligning it.
+    pub const fn title_centered(mut self) -> Block<'a> {
+        self.title_centered = true;
+        self
+    }
+
+    /// Set a title centered on the bottom border line.
+    pub fn title_bottom<T>(mut self, title: T) -> Block<'a>
+    where
+        T: Into<Spans<'a>>,
+    {
+        self.title_bottom = Some(title.into());
         self
     }
 
@@ -189,7 +210,23 @@ impl Widget for Block<'_> {
             let lx = u16::from(self.borders.intersects(Borders::LEFT));
             let rx = u16::from(self.borders.intersects(Borders::RIGHT));
             let width = area.width.saturating_sub(lx).saturating_sub(rx);
-            buf.set_spans(area.left() + lx, area.top(), &title, width);
+            let x = if self.title_centered {
+                let title_width = title.width() as u16;
+                area.left() + lx + width.saturating_sub(title_width) / 2
+            } else {
+                area.left() + lx
+            };
+            buf.set_spans(x, area.top(), &title, width);
+        }
+        if let Some(title) = self.title_bottom {
+            if self.borders.intersects(Borders::BOTTOM) {
+                let lx = u16::from(self.borders.intersects(Borders::LEFT));
+                let rx = u16::from(self.borders.intersects(Borders::RIGHT));
+                let width = area.width.saturating_sub(lx).saturating_sub(rx);
+                let title_width = title.width() as u16;
+                let x = area.left() + lx + width.saturating_sub(title_width) / 2;
+                buf.set_spans(x, area.bottom() - 1, &title, width);
+            }
         }
     }
 }

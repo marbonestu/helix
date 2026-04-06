@@ -177,6 +177,31 @@ impl Default for GutterLineNumbersConfig {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InputPosition {
+    /// Input bar appears at the top of the picker
+    #[default]
+    Top,
+    /// Input bar appears at the bottom of the picker
+    Bottom,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct PickerConfig {
+    /// Where the input field is rendered: `top` or `bottom`. Defaults to `top`.
+    pub input_position: InputPosition,
+}
+
+impl Default for PickerConfig {
+    fn default() -> Self {
+        Self {
+            input_position: InputPosition::Top,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct FilePickerConfig {
@@ -365,6 +390,7 @@ pub struct Config {
     pub continue_comments: bool,
     /// Whether to display infoboxes. Defaults to true.
     pub auto_info: bool,
+    pub picker: PickerConfig,
     pub file_picker: FilePickerConfig,
     pub file_explorer: FileExplorerConfig,
     pub file_tree: crate::file_tree::FileTreeConfig,
@@ -1173,6 +1199,7 @@ impl Default for Config {
             preview_completion_insert: true,
             completion_trigger_len: 2,
             auto_info: true,
+            picker: PickerConfig::default(),
             file_picker: FilePickerConfig::default(),
             file_explorer: FileExplorerConfig::default(),
             file_tree: crate::file_tree::FileTreeConfig::default(),

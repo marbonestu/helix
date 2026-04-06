@@ -2762,6 +2762,8 @@ pub(crate) fn global_search_in_dir(cx: &mut Context, search_root: PathBuf) {
     let reg = cx.register.unwrap_or('/');
     cx.editor.registers.last_search_register = reg;
 
+    let picker_input_position = cx.editor.config().picker.input_position;
+
     let picker = Picker::new(
         columns,
         1, // contents
@@ -2813,7 +2815,9 @@ pub(crate) fn global_search_in_dir(cx: &mut Context, search_root: PathBuf) {
          }| { Some((path.as_path().into(), Some((*line_start, *line_end)))) },
     )
     .with_history_register(Some(reg))
-    .with_dynamic_query(get_files, Some(275));
+    .with_dynamic_query(get_files, Some(275))
+    .with_title("Global Search")
+    .with_input_position(picker_input_position);
 
     cx.push_layer(Box::new(overlaid(picker)));
 }
