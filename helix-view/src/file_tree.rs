@@ -871,46 +871,57 @@ impl FileTree {
                     };
                     let depth = parent_node.depth + 1;
 
-                    // Before removing old children, snapshot their expansion
-                    // state by name so directory expansion is preserved across
-                    // rescans. We deliberately do NOT preserve old children IDs
-                    // or loaded state: using remove_subtree below purges all
-                    // descendants, so any reused grandchild IDs would have stale
-                    // parent pointers, causing node_path to reconstruct wrong
-                    // paths (e.g. self.root/grandchild_name instead of
-                    // self.root/child/grandchild_name), resulting in a blank
-                    // buffer when the user opens the file.
+                    // Build a name → NodeId map for the current children so we
+                    // can reuse existing node IDs for entries that survive the
+                    // rescan. Reusing an ID preserves the node's subtree and
+                    // keeps grandchildren's `parent` pointers valid, avoiding
+                    // the stale-parent bug where node_path drops intermediate
+                    // path components and opens a blank buffer.
                     let old_children: Vec<NodeId> = self
                         .nodes
                         .get(parent)
                         .map(|n| n.children.clone())
                         .unwrap_or_default();
-                    let mut old_expanded: std::collections::HashMap<String, bool> =
+                    let mut old_by_name: std::collections::HashMap<String, NodeId> =
                         old_children
                             .iter()
                             .filter_map(|&id| {
-                                self.nodes.get(id).map(|n| (n.name.clone(), n.expanded))
+                                self.nodes.get(id).map(|n| (n.name.clone(), id))
                             })
                             .collect();
-                    for old_id in old_children {
-                        self.remove_subtree(old_id);
-                    }
 
                     let mut child_ids = Vec::with_capacity(entries.len());
                     for (name, kind) in entries {
-                        let expanded = old_expanded.remove(&name).unwrap_or(false)
-                            && kind == NodeKind::Directory;
-                        let child_id = self.nodes.insert(FileNode {
-                            name,
-                            kind,
-                            parent: Some(parent),
-                            children: Vec::new(),
-                            expanded,
-                            loaded: false,
-                            depth,
-                            cached_git_status: GitStatus::Clean,
-                        });
-                        child_ids.push(child_id);
+                        if let Some(existing_id) = old_by_name.remove(&name) {
+                            // Entry still exists: update the node in place so
+                            // its NodeId (and all grandchild parent pointers)
+                            // remain valid.
+                            if let Some(node) = self.nodes.get_mut(existing_id) {
+                                node.kind = kind;
+                                node.parent = Some(parent);
+                                node.depth = depth;
+                            }
+                            child_ids.push(existing_id);
+                        } else {
+                            // New entry: create a fresh node.
+                            let child_id = self.nodes.insert(FileNode {
+                                name,
+                                kind,
+                                parent: Some(parent),
+                                children: Vec::new(),
+                                expanded: false,
+                                loaded: false,
+                                depth,
+                                cached_git_status: GitStatus::Clean,
+                            });
+                            child_ids.push(child_id);
+                        }
+                    }
+
+                    // Remove entries that are no longer on disk, including their
+                    // entire subtrees.
+                    for (_, removed_id) in old_by_name {
+                        self.remove_subtree(removed_id);
                     }
 
                     if let Some(parent_node) = self.nodes.get_mut(parent) {
