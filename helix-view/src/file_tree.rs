@@ -9,6 +9,18 @@ use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
 use tokio::sync::mpsc;
 
+/// Controls which directory is used as the root when `gf` (file picker) or
+/// `gs` (search) is invoked from the file tree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum PickerRoot {
+    /// Open the picker rooted at the directory of the currently selected node.
+    #[default]
+    Directory,
+    /// Open the picker rooted at the file tree's workspace root.
+    Workspace,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct FileTreeConfig {
@@ -41,6 +53,12 @@ pub struct FileTreeConfig {
     ///
     /// When unset, Helix auto-detects based on the `[editor.terminal]` config.
     pub open_terminal: Option<Vec<String>>,
+    /// Root directory used when `gf` (file picker) or `gs` (search) is invoked
+    /// from the file tree.
+    ///
+    /// - `"directory"` (default) — use the directory of the currently selected node.
+    /// - `"workspace"` — use the file tree's workspace root.
+    pub picker_root: PickerRoot,
 }
 
 impl Default for FileTreeConfig {
@@ -57,6 +75,7 @@ impl Default for FileTreeConfig {
             git_status_scope_to_path: false,
             icons: true,
             open_terminal: None,
+            picker_root: PickerRoot::Directory,
         }
     }
 }

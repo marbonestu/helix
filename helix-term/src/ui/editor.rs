@@ -53,6 +53,9 @@ pub struct EditorView {
     /// Pending multi-key sequence in the file tree (e.g. `space`, `space g`).
     /// Stored as `KeyEvent`s so they can be fed directly to `KeyTrie::search`.
     file_tree_seq: Vec<KeyEvent>,
+    /// Set when `g` is pressed in the file tree; resolved on the next key:
+    /// `gg` = jump to top, `gf` = file picker, `gs` = search.
+    file_tree_g_pending: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +83,7 @@ impl EditorView {
             file_tree_count: None,
             file_tree_cursor: None,
             file_tree_seq: Vec::new(),
+            file_tree_g_pending: false,
         }
     }
 
@@ -1709,6 +1713,7 @@ impl EditorView {
         // keymap to a scroll command or macro sequence, mirror that in the file tree.
         // This lets custom bindings like `C-e = "@9zj"` or `C-d = "@5j"` work here.
         if !key.modifiers.is_empty() {
+            self.file_tree_g_pending = false;
             use helix_view::document::Mode;
             use crate::keymap::KeyTrie;
             use crate::commands::MappableCommand;
@@ -1796,6 +1801,7 @@ impl EditorView {
         let in_seq   = !self.file_tree_seq.is_empty();
 
         if is_space || in_seq {
+            self.file_tree_g_pending = false;
             if key.code == KeyCode::Esc {
                 self.file_tree_seq.clear();
                 return EventResult::Consumed(None);
@@ -1849,6 +1855,51 @@ impl EditorView {
                 // Modifier key while in a sequence → abort; fall through to normal handling.
                 self.file_tree_seq.clear();
             }
+        }
+
+        // `g` prefix handler: `gg` = jump to top, `gf` = file picker,
+        // `gs` = search in directory.
+        if self.file_tree_g_pending {
+            self.file_tree_g_pending = false;
+            self.file_tree_count = None;
+            match key.code {
+                KeyCode::Char('g') => {
+                    if let Some(ref mut tree) = cx.editor.file_tree {
+                        tree.jump_to_top();
+                    }
+                }
+                KeyCode::Char('f') => {
+                    use helix_view::file_tree::PickerRoot;
+                    let root = cx.editor.file_tree.as_ref().and_then(|tree| {
+                        match config.picker_root {
+                            PickerRoot::Directory => tree.selected_dir_path(),
+                            PickerRoot::Workspace => Some(tree.root().to_path_buf()),
+                        }
+                    });
+                    if let Some(root) = root {
+                        cx.editor.left_sidebar.focused = false;
+                        let picker = crate::ui::file_picker(&cx.editor, root);
+                        cx.callback.push(Box::new(move |compositor, _cx| {
+                            compositor.push(Box::new(crate::ui::overlay::overlaid(picker)));
+                        }));
+                    }
+                }
+                KeyCode::Char('s') => {
+                    use helix_view::file_tree::PickerRoot;
+                    let root = cx.editor.file_tree.as_ref().and_then(|tree| {
+                        match config.picker_root {
+                            PickerRoot::Directory => tree.selected_dir_path(),
+                            PickerRoot::Workspace => Some(tree.root().to_path_buf()),
+                        }
+                    });
+                    if let Some(root) = root {
+                        cx.editor.left_sidebar.focused = false;
+                        commands::global_search_in_dir(cx, root);
+                    }
+                }
+                _ => {}
+            }
+            return EventResult::Consumed(None);
         }
 
         match key.code {
@@ -1988,9 +2039,7 @@ impl EditorView {
                 EventResult::Consumed(None)
             }
             KeyCode::Char('g') => {
-                if let Some(ref mut tree) = cx.editor.file_tree {
-                    tree.jump_to_top();
-                }
+                self.file_tree_g_pending = true;
                 EventResult::Consumed(None)
             }
             KeyCode::Char('G') => {
@@ -2253,6 +2302,7 @@ impl EditorView {
             }
             _ => {
                 self.file_tree_count = None;
+                self.file_tree_g_pending = false;
                 EventResult::Consumed(None)
             }
         }
