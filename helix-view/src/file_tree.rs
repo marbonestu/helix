@@ -852,39 +852,42 @@ impl FileTree {
                     };
                     let depth = parent_node.depth + 1;
 
-                    // Before removing old children, snapshot their state by name
-                    // so directory expansion is preserved across rescans.
+                    // Before removing old children, snapshot their expansion
+                    // state by name so directory expansion is preserved across
+                    // rescans. We deliberately do NOT preserve old children IDs
+                    // or loaded state: using remove_subtree below purges all
+                    // descendants, so any reused grandchild IDs would have stale
+                    // parent pointers, causing node_path to reconstruct wrong
+                    // paths (e.g. self.root/grandchild_name instead of
+                    // self.root/child/grandchild_name), resulting in a blank
+                    // buffer when the user opens the file.
                     let old_children: Vec<NodeId> = self
                         .nodes
                         .get(parent)
                         .map(|n| n.children.clone())
                         .unwrap_or_default();
-                    let mut old_state: std::collections::HashMap<String, (bool, bool, Vec<NodeId>)> =
+                    let mut old_expanded: std::collections::HashMap<String, bool> =
                         old_children
                             .iter()
                             .filter_map(|&id| {
-                                self.nodes.get(id).map(|n| {
-                                    (n.name.clone(), (n.expanded, n.loaded, n.children.clone()))
-                                })
+                                self.nodes.get(id).map(|n| (n.name.clone(), n.expanded))
                             })
                             .collect();
                     for old_id in old_children {
-                        self.nodes.remove(old_id);
+                        self.remove_subtree(old_id);
                     }
 
                     let mut child_ids = Vec::with_capacity(entries.len());
                     for (name, kind) in entries {
-                        let (expanded, loaded, children) = old_state
-                            .remove(&name)
-                            .filter(|_| kind == NodeKind::Directory)
-                            .unwrap_or((false, false, Vec::new()));
+                        let expanded = old_expanded.remove(&name).unwrap_or(false)
+                            && kind == NodeKind::Directory;
                         let child_id = self.nodes.insert(FileNode {
                             name,
                             kind,
                             parent: Some(parent),
-                            children,
+                            children: Vec::new(),
                             expanded,
-                            loaded,
+                            loaded: false,
                             depth,
                             cached_git_status: GitStatus::Clean,
                         });

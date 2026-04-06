@@ -40,6 +40,15 @@ Feature: File tree watches for external filesystem changes
       Then "docs/" appears in the file tree
 
   @file-tree @file-watching @happy-path
+  Rule: Grandchild paths remain correct after a parent directory rescan
+
+    Scenario: Opening a file in an expanded subdirectory uses the correct path after root rescan
+      Given the src/ directory is expanded in the tree
+      When a new file "trigger.rs" is created externally in the root directory
+      And the file tree processes pending updates
+      Then the resolved path for "main.rs" ends with "src/main.rs"
+
+  @file-tree @file-watching @happy-path
   Rule: Rapid external changes are coalesced into a single refresh
 
     Scenario: Multiple rapid changes result in one tree refresh

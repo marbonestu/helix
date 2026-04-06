@@ -177,3 +177,26 @@ fn all_rapid_files_appear(world: &mut FileTreeWorld, count: usize) {
         assert!(found, "expected '{name}' to appear in the file tree after rapid creation");
     }
 }
+
+/// Verify that the path reconstructed for a node ends with the expected suffix.
+///
+/// This catches the stale-parent-pointer bug where a rescan of a parent
+/// directory caused `node_path` to drop intermediate components, returning
+/// `root/filename` instead of `root/dir/filename`.
+#[then(expr = "the resolved path for {string} ends with {string}")]
+fn resolved_path_ends_with(world: &mut FileTreeWorld, name: String, suffix: String) {
+    let tree = world.tree.as_ref().expect("no FileTree");
+    let node_id = tree
+        .nodes()
+        .iter()
+        .find(|(_, n)| n.name == name)
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| panic!("node '{name}' not found in tree"));
+    let path = tree.node_path(node_id);
+    let path_str = path.to_string_lossy();
+    let normalized_suffix = suffix.replace('/', std::path::MAIN_SEPARATOR_STR);
+    assert!(
+        path_str.ends_with(&normalized_suffix),
+        "expected path for '{name}' to end with '{suffix}', got '{path_str}'"
+    );
+}
