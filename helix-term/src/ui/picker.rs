@@ -1200,18 +1200,25 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             EventResult::Consumed(Some(callback))
         };
 
+        // When the list is inverted (input at bottom), Up/Down visually correspond
+        // to the opposite cursor directions.
+        let (up_dir, down_dir) = match self.input_position {
+            InputPosition::Bottom => (Direction::Forward, Direction::Backward),
+            InputPosition::Top => (Direction::Backward, Direction::Forward),
+        };
+
         match key_event {
             shift!(Tab) | key!(Up) | ctrl!('p') => {
-                self.move_by(1, Direction::Backward);
+                self.move_by(1, up_dir);
             }
             key!(Tab) | key!(Down) | ctrl!('n') => {
-                self.move_by(1, Direction::Forward);
+                self.move_by(1, down_dir);
             }
             key!(PageDown) | ctrl!('d') => {
-                self.page_down();
+                self.move_by(self.completion_height as u32, down_dir);
             }
             key!(PageUp) | ctrl!('u') => {
-                self.page_up();
+                self.move_by(self.completion_height as u32, up_dir);
             }
             key!(Home) => {
                 self.to_start();
