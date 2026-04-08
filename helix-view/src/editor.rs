@@ -2471,11 +2471,22 @@ impl Editor {
             return;
         }
 
+        let was_visual = self.mode == Mode::Visual;
         self.visual_kind = None;
         self.mode = Mode::Normal;
         let (view, doc) = current!(self);
 
         try_restore_indent(doc, view);
+
+        // Collapse selections when leaving vim visual mode
+        if was_visual {
+            let text = doc.text().slice(..);
+            let selection = doc.selection(view.id).clone().transform(|range| {
+                Range::point(range.cursor(text))
+            });
+            doc.set_selection(view.id, selection);
+            return;
+        }
 
         // if leaving append mode, move cursor back by 1
         if doc.restore_cursor {
