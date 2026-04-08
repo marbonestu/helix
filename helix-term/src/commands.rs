@@ -6558,7 +6558,7 @@ fn select_textobject_inner(cx: &mut Context) {
     select_textobject(cx, textobject::TextObject::Inside);
 }
 
-fn select_textobject(cx: &mut Context, objtype: textobject::TextObject) {
+pub fn select_textobject(cx: &mut Context, objtype: textobject::TextObject) {
     let count = cx.count();
 
     cx.on_next_key(move |cx, event| {
@@ -7737,6 +7737,7 @@ fn git_open_line_in_browser(cx: &mut Context) {
 // ---------------------------------------------------------------------------
 
 use crate::vim::{Operator, PendingOperator};
+use crate::ui::EditorView;
 
 fn vim_set_pending_operator(cx: &mut Context, op: Operator) {
     let pre_count = cx.count;
@@ -7884,7 +7885,132 @@ fn vim_delete_to_line_end(cx: &mut Context) {
 }
 
 fn vim_dot_repeat(cx: &mut Context) {
-    // Dot-repeat is handled in the operator-pending dispatch layer.
-    // If we reach here, there's nothing to repeat.
-    cx.editor.set_status("Nothing to repeat");
+    cx.callback.push(Box::new(move |compositor, cx2| {
+        if let Some(editor_view) = compositor.find::<crate::ui::EditorView>() {
+            if let Some(action) = editor_view.vim_last_action.clone() {
+                let count = cx2
+                    .editor
+                    .count
+                    .map_or(action.total_count, |n| n.get());
+                cx2.editor.count = None;
+
+                let mut fake_cx = Context {
+                    register: action.register,
+                    count: std::num::NonZeroUsize::new(count),
+                    editor: cx2.editor,
+                    callback: Vec::new(),
+                    on_next_key_callback: None,
+                    jobs: cx2.jobs,
+                };
+
+                // Check if this was a doubled operator (dd/yy/cc)
+                let is_doubled = action.motion_keys.len() == 1
+                    && action
+                        .motion_keys
+                        .first()
+                        .and_then(|k| k.char())
+                        .map_or(false, |c| c == action.op.key_char());
+
+                if is_doubled {
+                    // Select `count` lines
+                    let (view, doc) = current!(fake_cx.editor);
+                    let text = doc.text().slice(..);
+                    let selection =
+                        doc.selection(view.id).clone().transform(|range| {
+                            let cursor_line = range.cursor_line(text);
+                            let start = text.line_to_char(cursor_line);
+                            let end_line =
+                                (cursor_line + count).min(text.len_lines());
+                            let end = text.line_to_char(end_line);
+                            Range::new(start, end)
+                        });
+                    doc.set_selection(view.id, selection);
+                } else if action.motion_keys.len() == 2
+                    && action
+                        .motion_keys
+                        .first()
+                        .and_then(|k| k.char())
+                        .map_or(false, |c| c == 'i' || c == 'a')
+                {
+                    // Text-object replay (e.g. `diw`)
+                    let inner = action.motion_keys[0].char() == Some('i');
+                    let objtype = if inner {
+                        helix_core::textobject::TextObject::Inside
+                    } else {
+                        helix_core::textobject::TextObject::Around
+                    };
+                    let ch = action.motion_keys[1].char().unwrap_or('w');
+                    vim_select_textobject_char(&mut fake_cx, objtype, ch);
+                } else if let Some(extend_cmd) = EditorView::vim_motion_to_extend(
+                    action.motion_keys[0],
+                ) {
+                    extend_cmd.execute(&mut fake_cx);
+                } else {
+                    return;
+                }
+
+                editor_view.vim_apply_operator(&mut fake_cx, &action.op);
+            } else {
+                cx2.editor.set_status("Nothing to repeat");
+            }
+        }
+    }));
+}
+
+/// Select a textobject by type and character, without waiting for key input.
+fn vim_select_textobject_char(
+    cx: &mut Context,
+    objtype: helix_core::textobject::TextObject,
+    ch: char,
+) {
+    use helix_core::textobject;
+
+    let count = cx.count();
+    let loader = cx.editor.syn_loader.load();
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        match ch {
+            'w' => textobject::textobject_word(text, range, objtype, count, false),
+            'W' => textobject::textobject_word(text, range, objtype, count, true),
+            'p' => textobject::textobject_paragraph(text, range, objtype, count),
+            'm' => textobject::textobject_pair_surround_closest(
+                doc.syntax(),
+                text,
+                range,
+                objtype,
+                count,
+            ),
+            c if !c.is_ascii_alphanumeric() => textobject::textobject_pair_surround(
+                doc.syntax(),
+                text,
+                range,
+                objtype,
+                c,
+                count,
+            ),
+            _ => {
+                // Tree-sitter textobjects
+                let obj_name = match ch {
+                    't' => "class",
+                    'f' => "function",
+                    'a' => "parameter",
+                    'c' => "comment",
+                    'T' => "test",
+                    'e' => "entry",
+                    'x' => "xml-element",
+                    _ => return range,
+                };
+                if let Some(syntax) = doc.syntax() {
+                    textobject::textobject_treesitter(
+                        text, range, objtype, obj_name, syntax, &loader, count,
+                    )
+                } else {
+                    range
+                }
+            }
+        }
+    });
+    doc.set_selection(view.id, selection);
 }

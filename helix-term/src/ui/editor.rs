@@ -1029,6 +1029,12 @@ impl EditorView {
     }
 
     fn command_mode(&mut self, mode: Mode, cxt: &mut commands::Context, event: KeyEvent) {
+        // Vim operator-pending: intercept keys after an operator like `d`, `y`, `c`
+        if self.vim_pending_op.is_some() {
+            self.vim_operator_pending_dispatch(cxt, event);
+            return;
+        }
+
         match (event, cxt.editor.count) {
             // If the count is already started and the input is a number, always continue the count.
             (key!(i @ '0'..='9'), Some(count)) => {
@@ -1113,6 +1119,251 @@ impl EditorView {
                 }
             }
         }
+    }
+
+    /// Dispatch a key while a vim operator is pending (e.g. `d` awaiting a motion).
+    fn vim_operator_pending_dispatch(
+        &mut self,
+        cxt: &mut commands::Context,
+        event: KeyEvent,
+    ) {
+        use helix_view::keyboard::KeyCode;
+
+        let pending = match self.vim_pending_op.take() {
+            Some(p) => p,
+            None => return,
+        };
+
+        match event {
+            // Escape cancels operator-pending
+            key!(Esc) => {}
+
+            // Digit accumulates motion count
+            key!(i @ '0'..='9') if cxt.editor.count.is_some() || i != '0' => {
+                let digit = i.to_digit(10).unwrap() as usize;
+                let count = cxt
+                    .editor
+                    .count
+                    .map_or(digit, |c| c.get() * 10 + digit);
+                if count <= 100_000_000 {
+                    cxt.editor.count = std::num::NonZeroUsize::new(count);
+                }
+                // Put pending op back and wait for more keys
+                self.vim_pending_op = Some(pending);
+            }
+
+            // Doubled operator (dd, yy, cc, >>, <<) → act on whole line(s)
+            KeyEvent {
+                code: KeyCode::Char(c),
+                modifiers: helix_view::keyboard::KeyModifiers::NONE,
+            } if c == pending.op.key_char() => {
+                let pre = pending.pre_count.map_or(1usize, |n| n.get());
+                let motion = cxt.editor.count.map_or(1usize, |n| n.get());
+                let total = pre * motion;
+                cxt.editor.count = None;
+
+                // Select `total` lines from cursor line
+                let (view, doc) = current!(cxt.editor);
+                let text = doc.text().slice(..);
+                let selection =
+                    doc.selection(view.id).clone().transform(|range| {
+                        let cursor_line = range.cursor_line(text);
+                        let start = text.line_to_char(cursor_line);
+                        let end_line =
+                            (cursor_line + total).min(text.len_lines());
+                        let end = text.line_to_char(end_line);
+                        Range::new(start, end)
+                    });
+                doc.set_selection(view.id, selection);
+
+                if let Some(reg) = pending.register {
+                    cxt.register = Some(reg);
+                }
+                self.vim_apply_operator(cxt, &pending.op);
+
+                // Record for dot-repeat
+                let key_events = vec![event];
+                self.vim_last_action = Some(crate::vim::VimRepeatAction {
+                    register: pending.register,
+                    total_count: total,
+                    op: pending.op,
+                    motion_keys: key_events,
+                });
+            }
+
+            // Text-object: `i` or `a` prefix (e.g. `diw`, `ca"`)
+            key!('i') | key!('a') => {
+                let inner = event == key!('i');
+                let objtype = if inner {
+                    helix_core::textobject::TextObject::Inside
+                } else {
+                    helix_core::textobject::TextObject::Around
+                };
+
+                let pre = pending.pre_count.map_or(1usize, |n| n.get());
+                let motion = cxt.editor.count.map_or(1usize, |n| n.get());
+                let total = pre * motion;
+                cxt.editor.count = None;
+                cxt.count = std::num::NonZeroUsize::new(total);
+
+                // Call select_textobject which will set on_next_key to wait for obj char
+                commands::select_textobject(cxt, objtype);
+
+                // Wrap the on_next_key callback to also apply the operator afterwards
+                if let Some((orig_cb, kind)) = cxt.on_next_key_callback.take() {
+                    let op = pending.op;
+                    let register = pending.register;
+                    let ia_key = event;
+                    cxt.on_next_key_callback = Some((
+                        Box::new(move |cx: &mut commands::Context, obj_event: KeyEvent| {
+                            // First run the textobject selection
+                            orig_cb(cx, obj_event);
+
+                            // Then apply the operator via callback
+                            let motion_keys = vec![ia_key, obj_event];
+                            cx.callback.push(Box::new(move |compositor, cx2| {
+                                if let Some(editor_view) = compositor
+                                    .find::<crate::ui::EditorView>()
+                                {
+                                    let mut fake_cx = commands::Context {
+                                        register,
+                                        count: std::num::NonZeroUsize::new(total),
+                                        editor: cx2.editor,
+                                        callback: Vec::new(),
+                                        on_next_key_callback: None,
+                                        jobs: cx2.jobs,
+                                    };
+                                    editor_view.vim_apply_operator(&mut fake_cx, &op);
+                                    editor_view.vim_last_action =
+                                        Some(crate::vim::VimRepeatAction {
+                                            register,
+                                            total_count: total,
+                                            op,
+                                            motion_keys,
+                                        });
+                                }
+                            }));
+                        }),
+                        kind,
+                    ));
+                }
+            }
+
+            // Motion key → look up extend_* equivalent, execute it, apply operator
+            _ => {
+                let pre = pending.pre_count.map_or(1usize, |n| n.get());
+                let motion = cxt.editor.count.map_or(1usize, |n| n.get());
+                let total = pre * motion;
+                cxt.editor.count = None;
+                cxt.count = std::num::NonZeroUsize::new(total);
+
+                if let Some(extend_cmd) = Self::vim_motion_to_extend(event) {
+                    extend_cmd.execute(cxt);
+
+                    if let Some(reg) = pending.register {
+                        cxt.register = Some(reg);
+                    }
+                    self.vim_apply_operator(cxt, &pending.op);
+
+                    // Record for dot-repeat
+                    self.vim_last_action = Some(crate::vim::VimRepeatAction {
+                        register: pending.register,
+                        total_count: total,
+                        op: pending.op,
+                        motion_keys: vec![event],
+                    });
+                }
+                // Unrecognized key → cancel (pending already taken)
+            }
+        }
+    }
+
+    /// Apply a vim operator to the current selection.
+    pub fn vim_apply_operator(
+        &mut self,
+        cxt: &mut commands::Context,
+        op: &crate::vim::Operator,
+    ) {
+        use crate::vim::Operator;
+
+        match op {
+            Operator::Delete => {
+                commands::MappableCommand::delete_selection.execute(cxt);
+            }
+            Operator::Yank => {
+                commands::MappableCommand::yank.execute(cxt);
+                // Collapse selection after yank
+                let (view, doc) = current!(cxt.editor);
+                let text = doc.text().slice(..);
+                let selection =
+                    doc.selection(view.id).clone().transform(|range| {
+                        Range::point(range.cursor(text))
+                    });
+                doc.set_selection(view.id, selection);
+            }
+            Operator::Change => {
+                commands::MappableCommand::change_selection.execute(cxt);
+            }
+            Operator::Indent => {
+                commands::MappableCommand::indent.execute(cxt);
+                // Collapse selection after indent
+                let (view, doc) = current!(cxt.editor);
+                let text = doc.text().slice(..);
+                let selection =
+                    doc.selection(view.id).clone().transform(|range| {
+                        Range::point(range.cursor(text))
+                    });
+                doc.set_selection(view.id, selection);
+            }
+            Operator::Unindent => {
+                commands::MappableCommand::unindent.execute(cxt);
+                let (view, doc) = current!(cxt.editor);
+                let text = doc.text().slice(..);
+                let selection =
+                    doc.selection(view.id).clone().transform(|range| {
+                        Range::point(range.cursor(text))
+                    });
+                doc.set_selection(view.id, selection);
+            }
+        }
+    }
+
+    /// Map a vim motion keypress to the corresponding `extend_*` command.
+    pub fn vim_motion_to_extend(event: KeyEvent) -> Option<commands::MappableCommand> {
+        use commands::MappableCommand as C;
+        use helix_view::keyboard::KeyCode;
+
+        Some(match event {
+            key!('h') | key!(Left) => C::extend_char_left,
+            key!('j') | key!(Down) => C::extend_visual_line_down,
+            key!('k') | key!(Up) => C::extend_visual_line_up,
+            key!('l') | key!(Right) => C::extend_char_right,
+            key!('w') => C::extend_next_word_start,
+            key!('b') => C::extend_prev_word_start,
+            key!('e') => C::extend_next_word_end,
+            key!('W') => C::extend_next_long_word_start,
+            key!('B') => C::extend_prev_long_word_start,
+            key!('E') => C::extend_next_long_word_end,
+            key!('f') => C::extend_next_char,
+            key!('t') => C::extend_till_char,
+            key!('F') => C::extend_prev_char,
+            key!('T') => C::extend_till_prev_char,
+            key!('0') => C::extend_to_line_start,
+            key!('$') | key!(End) => C::extend_to_line_end,
+            key!(Home) => C::extend_to_line_start,
+            key!('G') => C::extend_to_last_line,
+            key!('n') => C::extend_search_next,
+            key!('N') => C::extend_search_prev,
+            KeyEvent {
+                code: KeyCode::Char('g'),
+                modifiers: helix_view::keyboard::KeyModifiers::NONE,
+            } => {
+                // gg motion — extend to file start
+                // TODO: handle as a sub-keymap (g then g)
+                C::extend_to_file_start
+            }
+            _ => return None,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
