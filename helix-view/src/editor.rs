@@ -67,6 +67,21 @@ use arc_swap::{
 pub const DIR_STACK_CAP: usize = 10;
 pub const DEFAULT_AUTO_SAVE_DELAY: u64 = 3000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum GrammarMode {
+    #[default]
+    Helix,
+    Vim,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum VisualKind {
+    Char,
+    Line,
+    Block,
+}
+
 fn deserialize_duration_millis<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -467,6 +482,8 @@ pub struct Config {
     pub insecure: bool,
     /// Session persistence configuration
     pub session: SessionConfig,
+    /// Keybinding grammar: "helix" (default) or "vim"
+    pub grammar: GrammarMode,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, Clone, Copy)]
@@ -722,6 +739,7 @@ pub struct ModeConfig {
     pub normal: String,
     pub insert: String,
     pub select: String,
+    pub visual: String,
 }
 
 impl Default for ModeConfig {
@@ -730,6 +748,7 @@ impl Default for ModeConfig {
             normal: String::from("NOR"),
             insert: String::from("INS"),
             select: String::from("SEL"),
+            visual: String::from("VIS"),
         }
     }
 }
@@ -814,7 +833,12 @@ pub struct CursorShapeConfig([CursorKind; 3]);
 
 impl CursorShapeConfig {
     pub fn from_mode(&self, mode: Mode) -> CursorKind {
-        self.get(mode as usize).copied().unwrap_or_default()
+        let idx = match mode {
+            // Visual reuses the Select cursor shape
+            Mode::Visual => Mode::Select as usize,
+            m => m as usize,
+        };
+        self.get(idx).copied().unwrap_or_default()
     }
 }
 
@@ -1242,6 +1266,7 @@ impl Default for Config {
             buffer_picker: BufferPickerConfig::default(),
             insecure: false,
             session: SessionConfig::default(),
+            grammar: GrammarMode::default(),
         }
     }
 }
@@ -1347,6 +1372,8 @@ pub struct Editor {
 
     pub mouse_down_range: Option<Range>,
     pub cursor_cache: CursorCache,
+    /// Active visual sub-type when in vim Visual mode
+    pub visual_kind: Option<VisualKind>,
 }
 
 pub type Motion = Box<dyn Fn(&mut Editor)>;
@@ -1472,6 +1499,7 @@ impl Editor {
             dir_stack: VecDeque::with_capacity(DIR_STACK_CAP),
             file_tree: None,
             left_sidebar: Sidebar::new(conf.file_tree.width),
+            visual_kind: None,
         }
     }
 
@@ -2443,6 +2471,7 @@ impl Editor {
             return;
         }
 
+        self.visual_kind = None;
         self.mode = Mode::Normal;
         let (view, doc) = current!(self);
 

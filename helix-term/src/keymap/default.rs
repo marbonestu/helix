@@ -441,3 +441,401 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
         Mode::Insert => insert,
     )
 }
+
+pub fn default_for_grammar(grammar: helix_view::editor::GrammarMode) -> HashMap<Mode, KeyTrie> {
+    match grammar {
+        helix_view::editor::GrammarMode::Helix => default(),
+        helix_view::editor::GrammarMode::Vim => vim_default(),
+    }
+}
+
+pub fn vim_default() -> HashMap<Mode, KeyTrie> {
+    let normal = keymap!({ "Normal mode"
+        "h" | "left" => move_char_left,
+        "j" | "down" => move_visual_line_down,
+        "k" | "up" => move_visual_line_up,
+        "l" | "right" => move_char_right,
+
+        "t" => find_till_char,
+        "f" => find_next_char,
+        "T" => till_prev_char,
+        "F" => find_prev_char,
+        "r" => replace,
+        "A-." => repeat_last_motion,
+
+        "~" => switch_case,
+
+        "home" => goto_line_start,
+        "end" => goto_line_end,
+
+        "w" => move_next_word_start,
+        "b" => move_prev_word_start,
+        "e" => move_next_word_end,
+
+        "W" => move_next_long_word_start,
+        "B" => move_prev_long_word_start,
+        "E" => move_next_long_word_end,
+
+        "v" => vim_visual_mode_char,
+        "V" => vim_visual_mode_line,
+        // C-v for visual block deferred to Phase 7
+
+        "G" => goto_line,
+        "g" => { "Goto"
+            "g" => goto_file_start,
+            "|" => goto_column,
+            "e" => goto_last_line,
+            "f" => goto_file,
+            "h" => goto_line_start,
+            "l" => goto_line_end,
+            "s" => goto_first_nonwhitespace,
+            "d" => goto_definition,
+            "D" => goto_declaration,
+            "y" => goto_type_definition,
+            "r" => goto_reference,
+            "i" => goto_implementation,
+            "t" => goto_window_top,
+            "c" => goto_window_center,
+            "b" => goto_window_bottom,
+            "a" => goto_last_accessed_file,
+            "m" => goto_last_modified_file,
+            "n" => goto_next_buffer,
+            "p" => goto_previous_buffer,
+            "k" => move_line_up,
+            "j" => move_line_down,
+            "." => goto_last_modification,
+            "w" => goto_word,
+            "S" => flash_jump,
+            "/" => flash_search,
+        },
+        ":" => command_mode,
+
+        "i" => insert_mode,
+        "I" => insert_at_line_start,
+        "a" => append_mode,
+        "A" => insert_at_line_end,
+        "o" => open_below,
+        "O" => open_above,
+
+        // Operators — set pending state, wait for motion/text-object
+        "d" => vim_operator_delete,
+        "c" => vim_operator_change,
+        "y" => vim_operator_yank,
+        ">" => vim_operator_indent,
+        "<" => vim_operator_unindent,
+
+        // Direct editing (no operator needed)
+        "x" => delete_char_forward,
+        "X" => delete_char_backward,
+        "s" => change_selection,
+        "S" => select_regex,
+        "C" => vim_change_to_line_end,
+        "D" => vim_delete_to_line_end,
+        "J" => join_selections,
+        "p" => paste_after,
+        "P" => paste_before,
+
+        "u" => undo,
+        "U" => redo,
+
+        "." => vim_dot_repeat,
+
+        "/" => search,
+        "?" => rsearch,
+        "n" => search_next,
+        "N" => search_prev,
+        "*" => search_selection_detect_word_boundaries,
+
+        "\"" => select_register,
+
+        "Q" => record_macro,
+        "q" => replay_macro,
+        "@" => replay_macro,
+
+        "esc" => normal_mode,
+        "C-b" | "pageup" => page_up,
+        "C-f" | "pagedown" => page_down,
+        "C-u" => page_cursor_half_up,
+        "C-d" => page_cursor_half_down,
+
+        "C-right" => grow_width,
+        "C-left" => shrink_width,
+        "C-down" => grow_height,
+        "C-up" => shrink_height,
+        "C-e" => toggle_reveal_file_tree,
+
+        "C-w" => { "Window"
+            "C-w" | "w" => rotate_view,
+            "C-s" | "s" => hsplit,
+            "C-v" | "v" => vsplit,
+            "C-t" | "t" => transpose_view,
+            "f" => goto_file_hsplit,
+            "F" => goto_file_vsplit,
+            "C-q" | "q" => wclose,
+            "C-o" | "o" => wonly,
+            "C-h" | "h" | "left" => jump_view_left,
+            "C-j" | "j" | "down" => jump_view_down,
+            "C-k" | "k" | "up" => jump_view_up,
+            "C-l" | "l" | "right" => jump_view_right,
+            "L" => swap_view_right,
+            "K" => swap_view_up,
+            "H" => swap_view_left,
+            "J" => swap_view_down,
+            ">" => grow_width,
+            "<" => shrink_width,
+            "+" => grow_height,
+            "-" => shrink_height,
+            "=" => equalize_splits,
+            "z" => toggle_zoom,
+            "n" => { "New split scratch buffer"
+                "C-s" | "s" => hsplit_new,
+                "C-v" | "v" => vsplit_new,
+            },
+        },
+
+        "C-c" => toggle_comments,
+
+        "C-i" | "tab" => jump_forward,
+        "C-o" => jump_backward,
+        "C-s" => save_selection,
+
+        "z" => { "View"
+            "z" | "c" => align_view_center,
+            "t" => align_view_top,
+            "b" => align_view_bottom,
+            "m" => align_view_middle,
+            "k" | "up" => scroll_up,
+            "j" | "down" => scroll_down,
+            "C-b" | "pageup" => page_up,
+            "C-f" | "pagedown" => page_down,
+            "C-u" | "backspace" => page_cursor_half_up,
+            "C-d" | "space" => page_cursor_half_down,
+        },
+        "Z" => { "View" sticky=true
+            "z" | "c" => align_view_center,
+            "t" => align_view_top,
+            "b" => align_view_bottom,
+            "m" => align_view_middle,
+            "k" | "up" => scroll_up,
+            "j" | "down" => scroll_down,
+            "C-b" | "pageup" => page_up,
+            "C-f" | "pagedown" => page_down,
+            "C-u" | "backspace" => page_cursor_half_up,
+            "C-d" | "space" => page_cursor_half_down,
+        },
+
+        "|" => shell_pipe,
+        "A-|" => shell_pipe_to,
+        "!" => shell_insert_output,
+        "A-!" => shell_append_output,
+        "$" => shell_keep_pipe,
+        "C-z" => suspend,
+
+        "C-a" => increment,
+        "C-x" => decrement,
+
+        "[" => { "Left bracket"
+            "d" => goto_prev_diag,
+            "D" => goto_first_diag,
+            "g" => goto_prev_change,
+            "G" => goto_first_change,
+            "f" => ts_flash_prev_function,
+            "t" => ts_flash_prev_class,
+            "a" => ts_flash_prev_parameter,
+            "c" => ts_flash_prev_comment,
+            "e" => ts_flash_prev_entry,
+            "T" => ts_flash_prev_test,
+            "p" => goto_prev_paragraph,
+            "x" => ts_flash_prev_xml_element,
+            "space" => add_newline_above,
+        },
+        "]" => { "Right bracket"
+            "d" => goto_next_diag,
+            "D" => goto_last_diag,
+            "g" => goto_next_change,
+            "G" => goto_last_change,
+            "f" => ts_flash_next_function,
+            "t" => ts_flash_next_class,
+            "a" => ts_flash_next_parameter,
+            "c" => ts_flash_next_comment,
+            "e" => ts_flash_next_entry,
+            "T" => ts_flash_next_test,
+            "p" => goto_next_paragraph,
+            "x" => ts_flash_next_xml_element,
+            "space" => add_newline_below,
+        },
+
+        "space" => { "Space"
+            "f" => file_picker,
+            "F" => file_picker_in_current_directory,
+            "e" => file_explorer,
+            "E" => toggle_file_tree,
+            "A-e" => reveal_in_file_tree,
+            "." => file_explorer_in_current_buffer_directory,
+            "b" => buffer_picker,
+            "j" => jumplist_picker,
+            "s" => lsp_or_syntax_symbol_picker,
+            "S" => lsp_or_syntax_workspace_symbol_picker,
+            "d" => diagnostics_picker,
+            "D" => workspace_diagnostics_picker,
+            "g" => { "Git"
+                "g" => changed_file_picker,
+                "o" => { "Open in browser"
+                    "f" => git_open_file_in_browser,
+                    "l" | "." => git_open_line_in_browser,
+                },
+            },
+            "a" => code_action,
+            "'" => last_picker,
+            "G" => { "Debug (experimental)" sticky=true
+                "l" => dap_launch,
+                "r" => dap_restart,
+                "b" => dap_toggle_breakpoint,
+                "c" => dap_continue,
+                "h" => dap_pause,
+                "i" => dap_step_in,
+                "o" => dap_step_out,
+                "n" => dap_next,
+                "v" => dap_variables,
+                "t" => dap_terminate,
+                "C-c" => dap_edit_condition,
+                "C-l" => dap_edit_log,
+                "s" => { "Switch"
+                    "t" => dap_switch_thread,
+                    "f" => dap_switch_stack_frame,
+                },
+                "e" => dap_enable_exceptions,
+                "E" => dap_disable_exceptions,
+            },
+            "w" => { "Window"
+                "C-w" | "w" => rotate_view,
+                "C-s" | "s" => hsplit,
+                "C-v" | "v" => vsplit,
+                "C-t" | "t" => transpose_view,
+                "f" => goto_file_hsplit,
+                "F" => goto_file_vsplit,
+                "C-q" | "q" => wclose,
+                "C-o" | "o" => wonly,
+                "C-h" | "h" | "left" => jump_view_left,
+                "C-j" | "j" | "down" => jump_view_down,
+                "C-k" | "k" | "up" => jump_view_up,
+                "C-l" | "l" | "right" => jump_view_right,
+                "H" => swap_view_left,
+                "J" => swap_view_down,
+                "K" => swap_view_up,
+                "L" => swap_view_right,
+                ">" => grow_width,
+                "<" => shrink_width,
+                "+" => grow_height,
+                "-" => shrink_height,
+                "=" => equalize_splits,
+                "z" => toggle_zoom,
+                "n" => { "New split scratch buffer"
+                    "C-s" | "s" => hsplit_new,
+                    "C-v" | "v" => vsplit_new,
+                },
+            },
+            "y" => yank_to_clipboard,
+            "Y" => yank_main_selection_to_clipboard,
+            "p" => paste_clipboard_after,
+            "P" => paste_clipboard_before,
+            "R" => replace_selections_with_clipboard,
+            "/" => global_search,
+            "k" => hover,
+            "r" => rename_symbol,
+            "h" => select_references_to_symbol_under_cursor,
+            "c" => toggle_comments,
+            "C" => toggle_block_comments,
+            "A-c" => toggle_line_comments,
+            "?" => command_palette,
+        },
+
+        "0" => goto_line_start,
+    });
+
+    // Vim visual mode: clone normal, replace move_* with extend_*
+    let mut visual = normal.clone();
+    visual.merge_nodes(keymap!({ "Visual mode"
+        "h" | "left" => extend_char_left,
+        "j" | "down" => extend_visual_line_down,
+        "k" | "up" => extend_visual_line_up,
+        "l" | "right" => extend_char_right,
+
+        "w" => extend_next_word_start,
+        "b" => extend_prev_word_start,
+        "e" => extend_next_word_end,
+        "W" => extend_next_long_word_start,
+        "B" => extend_prev_long_word_start,
+        "E" => extend_next_long_word_end,
+
+        "t" => extend_till_char,
+        "f" => extend_next_char,
+        "T" => extend_till_prev_char,
+        "F" => extend_prev_char,
+
+        "n" => extend_search_next,
+        "N" => extend_search_prev,
+
+        "home" => extend_to_line_start,
+        "end" => extend_to_line_end,
+
+        "esc" => normal_mode,
+
+        // Operators in visual mode act immediately on selection
+        "d" => delete_selection,
+        "c" => change_selection,
+        "y" => vim_visual_yank,
+        ">" => indent,
+        "<" => unindent,
+
+        // v/V toggle between visual sub-types or exit
+        "v" => vim_visual_mode_char,
+        "V" => vim_visual_mode_line,
+
+        "o" => flip_selections,
+
+        "g" => { "Goto"
+            "g" => extend_to_file_start,
+            "|" => extend_to_column,
+            "e" => extend_to_last_line,
+            "k" => extend_line_up,
+            "j" => extend_line_down,
+            "w" => extend_to_word,
+            "S" => extend_flash_jump,
+        },
+
+        "0" => extend_to_line_start,
+    }));
+
+    let insert = keymap!({ "Insert mode"
+        "esc" => normal_mode,
+
+        "C-s" => commit_undo_checkpoint,
+        "C-x" => completion,
+        "C-r" => insert_register,
+
+        "C-w" | "A-backspace" => delete_word_backward,
+        "A-d" | "A-del" => delete_word_forward,
+        "C-u" => kill_to_line_start,
+        "C-k" => kill_to_line_end,
+        "C-h" | "backspace" | "S-backspace" => delete_char_backward,
+        "C-d" | "del" => delete_char_forward,
+        "C-j" | "ret" => insert_newline,
+        "tab" => smart_tab,
+        "S-tab" => insert_tab,
+
+        "up" => move_visual_line_up,
+        "down" => move_visual_line_down,
+        "left" => move_char_left,
+        "right" => move_char_right,
+        "pageup" => page_up,
+        "pagedown" => page_down,
+        "home" => goto_line_start,
+        "end" => goto_line_end_newline,
+    });
+    hashmap!(
+        Mode::Normal => normal,
+        Mode::Visual => visual,
+        Mode::Insert => insert,
+    )
+}

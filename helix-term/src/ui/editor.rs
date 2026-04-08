@@ -56,6 +56,10 @@ pub struct EditorView {
     /// Set when `g` is pressed in the file tree; resolved on the next key:
     /// `gg` = jump to top, `gf` = file picker, `gs` = search.
     file_tree_g_pending: bool,
+    /// Vim operator-pending state (e.g. after pressing `d`, awaiting motion).
+    pub vim_pending_op: Option<crate::vim::PendingOperator>,
+    /// Last completed vim operator+motion for dot-repeat.
+    pub vim_last_action: Option<crate::vim::VimRepeatAction>,
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +88,8 @@ impl EditorView {
             file_tree_cursor: None,
             file_tree_seq: Vec::new(),
             file_tree_g_pending: false,
+            vim_pending_op: None,
+            vim_last_action: None,
         }
     }
 
@@ -571,14 +577,14 @@ impl EditorView {
 
         let cursor_scope = match mode {
             Mode::Insert => theme.find_highlight_exact("ui.cursor.insert"),
-            Mode::Select => theme.find_highlight_exact("ui.cursor.select"),
+            Mode::Select | Mode::Visual => theme.find_highlight_exact("ui.cursor.select"),
             Mode::Normal => theme.find_highlight_exact("ui.cursor.normal"),
         }
         .unwrap_or(base_cursor_scope);
 
         let primary_cursor_scope = match mode {
             Mode::Insert => theme.find_highlight_exact("ui.cursor.primary.insert"),
-            Mode::Select => theme.find_highlight_exact("ui.cursor.primary.select"),
+            Mode::Select | Mode::Visual => theme.find_highlight_exact("ui.cursor.primary.select"),
             Mode::Normal => theme.find_highlight_exact("ui.cursor.primary.normal"),
         }
         .unwrap_or(base_primary_cursor_scope);
@@ -1361,7 +1367,7 @@ impl EditorView {
                     if modifiers == KeyModifiers::ALT {
                         let selection = doc.selection(view_id).clone();
                         doc.set_selection(view_id, selection.push(Range::point(pos)));
-                    } else if editor.mode == Mode::Select {
+                    } else if editor.mode == Mode::Select || editor.mode == Mode::Visual {
                         // Discards non-primary selections for consistent UX with normal mode
                         let primary = doc.selection(view_id).primary().put_cursor(
                             doc.text().slice(..),
@@ -1653,7 +1659,10 @@ impl EditorView {
                         .editor
                         .file_tree
                         .as_ref()
-                        .map_or(false, |t| matches!(t.prompt_mode(), PromptMode::DeleteConfirm { .. }));
+                        .map_or(false, |t| matches!(
+                            t.prompt_mode(),
+                            PromptMode::DeleteConfirm { .. } | PromptMode::DeleteConfirmMulti { .. }
+                        ));
 
                     if is_delete_confirm {
                         let commit = if ch == 'y' {
@@ -2028,6 +2037,9 @@ impl EditorView {
                 EventResult::Consumed(None)
             }
             KeyCode::Esc => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.clear_selection();
+                }
                 cx.editor.left_sidebar.focused = false;
                 EventResult::Consumed(None)
             }
@@ -2035,6 +2047,20 @@ impl EditorView {
             KeyCode::Char('R') => {
                 if let Some(ref mut tree) = cx.editor.file_tree {
                     tree.refresh(&config);
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('E') => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    if let Some(id) = tree.selected_id() {
+                        tree.expand_all(id, &config);
+                    }
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('C') => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    tree.collapse_all();
                 }
                 EventResult::Consumed(None)
             }
@@ -2087,9 +2113,20 @@ impl EditorView {
                 }
                 EventResult::Consumed(None)
             }
-            KeyCode::Char('d') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('v') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(ref mut tree) = cx.editor.file_tree {
                     if let Some(id) = tree.selected_id() {
+                        tree.toggle_selection(id);
+                    }
+                }
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('d') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(ref mut tree) = cx.editor.file_tree {
+                    if tree.has_selection() {
+                        let paths = tree.selected_paths();
+                        tree.start_delete_confirm_multi(paths);
+                    } else if let Some(id) = tree.selected_id() {
                         tree.start_delete_confirm(id);
                     }
                 }
@@ -2097,7 +2134,11 @@ impl EditorView {
             }
             KeyCode::Char('y') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(ref mut tree) = cx.editor.file_tree {
-                    if let Some(id) = tree.selected_id() {
+                    if tree.has_selection() {
+                        if let Some(count) = tree.yank_selection() {
+                            tree.set_status(format!("Yanked {count} items"));
+                        }
+                    } else if let Some(id) = tree.selected_id() {
                         let path = tree.node_path(id);
                         let display = path.file_name()
                             .map(|n| n.to_string_lossy().into_owned())
@@ -2126,7 +2167,11 @@ impl EditorView {
             }
             KeyCode::Char('x') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(ref mut tree) = cx.editor.file_tree {
-                    if let Some(id) = tree.selected_id() {
+                    if tree.has_selection() {
+                        if let Some(count) = tree.cut_selection() {
+                            tree.set_status(format!("Cut {count} items"));
+                        }
+                    } else if let Some(id) = tree.selected_id() {
                         let path = tree.node_path(id);
                         let display = path.file_name()
                             .map(|n| n.to_string_lossy().into_owned())
@@ -2152,17 +2197,23 @@ impl EditorView {
                     };
 
                     match clip.op {
-                        ClipboardOp::Copy => spawn_copy_file(tx, clip.path, dest_dir),
-                        ClipboardOp::Cut => {
-                            let new_path = dest_dir.join(clip.path.file_name().unwrap());
-                            if let Some(doc) = cx.editor.document_by_path(&clip.path) {
-                                let id = doc.id();
-                                cx.editor.set_doc_path(id, &new_path);
+                        ClipboardOp::Copy => {
+                            for path in clip.paths {
+                                spawn_copy_file(tx.clone(), path, dest_dir.clone());
                             }
+                        }
+                        ClipboardOp::Cut => {
                             if let Some(ref mut tree) = cx.editor.file_tree {
                                 tree.clear_clipboard();
                             }
-                            spawn_move_path(tx, clip.path, dest_dir);
+                            for path in clip.paths {
+                                let new_path = dest_dir.join(path.file_name().unwrap());
+                                if let Some(doc) = cx.editor.document_by_path(&path) {
+                                    let id = doc.id();
+                                    cx.editor.set_doc_path(id, &new_path);
+                                }
+                                spawn_move_path(tx.clone(), path, dest_dir.clone());
+                            }
                         }
                     }
                 }));
@@ -2419,6 +2470,16 @@ impl EditorView {
                 Self::close_buffers_for_path(cx.editor, &path);
                 if let Some(tx) = tx {
                     spawn_delete(tx, path, is_dir);
+                }
+            }
+            PromptCommit::DeleteConfirmedMulti(paths) => {
+                let tx = cx.editor.file_tree.as_ref().map(|t| t.update_tx());
+                if let Some(tx) = tx {
+                    for path in paths {
+                        let is_dir = path.is_dir();
+                        Self::close_buffers_for_path(cx.editor, &path);
+                        spawn_delete(tx.clone(), path, is_dir);
+                    }
                 }
             }
         }

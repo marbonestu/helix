@@ -171,6 +171,7 @@ where
         Mode::Insert => &modenames.insert,
         Mode::Select => &modenames.select,
         Mode::Normal => &modenames.normal,
+        Mode::Visual => &modenames.visual,
     };
     let content = if visible {
         format!(" {mode_str} ")
@@ -181,7 +182,7 @@ where
     let style = if visible && config.color_modes {
         match context.editor.mode() {
             Mode::Insert => context.editor.theme.get("ui.statusline.insert"),
-            Mode::Select => context.editor.theme.get("ui.statusline.select"),
+            Mode::Select | Mode::Visual => context.editor.theme.get("ui.statusline.select"),
             Mode::Normal => context.editor.theme.get("ui.statusline.normal"),
         }
     } else {

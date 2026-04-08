@@ -2,7 +2,7 @@ pub mod default;
 pub mod macros;
 
 pub use crate::commands::MappableCommand;
-pub use default::default;
+pub use default::{default, default_for_grammar};
 
 use arc_swap::{
     access::{DynAccess, DynGuard},

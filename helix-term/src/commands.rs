@@ -650,6 +650,17 @@ impl MappableCommand {
         rotate_selections_last, "Make the last selection your primary one",
         git_open_file_in_browser, "Open current file on the git hosting website",
         git_open_line_in_browser, "Open current file at the cursor line on the git hosting website",
+        vim_operator_delete, "Vim: delete operator (awaits motion)",
+        vim_operator_yank, "Vim: yank operator (awaits motion)",
+        vim_operator_change, "Vim: change operator (awaits motion)",
+        vim_operator_indent, "Vim: indent operator (awaits motion)",
+        vim_operator_unindent, "Vim: unindent operator (awaits motion)",
+        vim_visual_mode_char, "Vim: enter charwise visual mode",
+        vim_visual_mode_line, "Vim: enter linewise visual mode",
+        vim_visual_yank, "Vim: yank selection and return to normal mode",
+        vim_change_to_line_end, "Vim: change to end of line",
+        vim_delete_to_line_end, "Vim: delete to end of line",
+        vim_dot_repeat, "Vim: repeat last operator+motion",
     );
 }
 
@@ -5154,7 +5165,7 @@ fn paste_impl(
 pub(crate) fn paste_bracketed_value(cx: &mut Context, contents: String) {
     let count = cx.count();
     let paste = match cx.editor.mode {
-        Mode::Insert | Mode::Select => Paste::Cursor,
+        Mode::Insert | Mode::Select | Mode::Visual => Paste::Cursor,
         Mode::Normal => Paste::Before,
     };
     let (view, doc) = current!(cx.editor);
@@ -7719,4 +7730,161 @@ fn git_open_line_in_browser(cx: &mut Context) {
         Some(Err(e))   => cx.editor.set_error(e.to_string()),
         None           => cx.editor.set_error("Buffer has no file path"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Vim-mode commands
+// ---------------------------------------------------------------------------
+
+use crate::vim::{Operator, PendingOperator};
+
+fn vim_set_pending_operator(cx: &mut Context, op: Operator) {
+    let pre_count = cx.count;
+    let register = cx.register;
+    cx.callback.push(Box::new(move |compositor, _cx| {
+        if let Some(editor_view) = compositor
+            .find::<crate::ui::EditorView>()
+        {
+            editor_view.vim_pending_op = Some(PendingOperator {
+                op,
+                pre_count,
+                register,
+            });
+        }
+    }));
+}
+
+fn vim_operator_delete(cx: &mut Context) {
+    vim_set_pending_operator(cx, Operator::Delete);
+}
+
+fn vim_operator_yank(cx: &mut Context) {
+    vim_set_pending_operator(cx, Operator::Yank);
+}
+
+fn vim_operator_change(cx: &mut Context) {
+    vim_set_pending_operator(cx, Operator::Change);
+}
+
+fn vim_operator_indent(cx: &mut Context) {
+    vim_set_pending_operator(cx, Operator::Indent);
+}
+
+fn vim_operator_unindent(cx: &mut Context) {
+    vim_set_pending_operator(cx, Operator::Unindent);
+}
+
+fn vim_visual_mode_char(cx: &mut Context) {
+    use helix_view::editor::VisualKind;
+
+    if cx.editor.mode == Mode::Visual {
+        if cx.editor.visual_kind == Some(VisualKind::Char) {
+            // v in visual char mode → exit to normal
+            cx.editor.enter_normal_mode();
+            let (view, doc) = current!(cx.editor);
+            let text = doc.text().slice(..);
+            let selection = doc.selection(view.id).clone().transform(|range| {
+                Range::point(range.cursor(text))
+            });
+            doc.set_selection(view.id, selection);
+            return;
+        }
+        cx.editor.visual_kind = Some(VisualKind::Char);
+        return;
+    }
+
+    // Enter visual mode from normal
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        if range.is_empty() && range.head == text.len_chars() {
+            Range::new(
+                helix_core::graphemes::prev_grapheme_boundary(text, range.anchor),
+                range.head,
+            )
+        } else {
+            range
+        }
+    });
+    doc.set_selection(view.id, selection);
+    cx.editor.mode = Mode::Visual;
+    cx.editor.visual_kind = Some(VisualKind::Char);
+}
+
+fn vim_visual_mode_line(cx: &mut Context) {
+    use helix_view::editor::VisualKind;
+
+    if cx.editor.mode == Mode::Visual {
+        if cx.editor.visual_kind == Some(VisualKind::Line) {
+            cx.editor.enter_normal_mode();
+            let (view, doc) = current!(cx.editor);
+            let text = doc.text().slice(..);
+            let selection = doc.selection(view.id).clone().transform(|range| {
+                Range::point(range.cursor(text))
+            });
+            doc.set_selection(view.id, selection);
+            return;
+        }
+        cx.editor.visual_kind = Some(VisualKind::Line);
+        return;
+    }
+
+    // Select current line and enter visual line mode
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        let line = range.cursor_line(text);
+        let start = text.line_to_char(line);
+        let end = text.line_to_char((line + 1).min(text.len_lines()));
+        Range::new(start, end)
+    });
+    doc.set_selection(view.id, selection);
+    cx.editor.mode = Mode::Visual;
+    cx.editor.visual_kind = Some(VisualKind::Line);
+}
+
+fn vim_visual_yank(cx: &mut Context) {
+    yank_impl(
+        cx.editor,
+        cx.register
+            .unwrap_or(cx.editor.config().default_yank_register),
+    );
+    cx.editor.enter_normal_mode();
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        Range::point(range.cursor(text))
+    });
+    doc.set_selection(view.id, selection);
+}
+
+fn vim_change_to_line_end(cx: &mut Context) {
+    // Extend selection to end of line, then change
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        let line = range.cursor_line(text);
+        let line_end = helix_core::line_ending::line_end_char_index(&text, line);
+        Range::new(range.cursor(text), line_end)
+    });
+    doc.set_selection(view.id, selection);
+    delete_selection_impl(cx, Operation::Change, YankAction::Yank);
+}
+
+fn vim_delete_to_line_end(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        let line = range.cursor_line(text);
+        let line_end = helix_core::line_ending::line_end_char_index(&text, line);
+        Range::new(range.cursor(text), line_end)
+    });
+    doc.set_selection(view.id, selection);
+    delete_selection_impl(cx, Operation::Delete, YankAction::Yank);
+}
+
+fn vim_dot_repeat(cx: &mut Context) {
+    // Dot-repeat is handled in the operator-pending dispatch layer.
+    // If we reach here, there's nothing to repeat.
+    cx.editor.set_status("Nothing to repeat");
 }

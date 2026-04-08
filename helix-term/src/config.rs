@@ -34,6 +34,15 @@ impl Default for Config {
     }
 }
 
+impl Config {
+    /// Build a default keymap based on the configured grammar mode.
+    pub fn default_keys_for_grammar(
+        grammar: helix_view::editor::GrammarMode,
+    ) -> HashMap<Mode, KeyTrie> {
+        keymap::default_for_grammar(grammar)
+    }
+}
+
 #[derive(Debug)]
 pub enum ConfigLoadError {
     BadConfig(TomlError),
@@ -66,14 +75,6 @@ impl Config {
             local.and_then(|file| toml::from_str(&file).map_err(ConfigLoadError::BadConfig));
         let res = match (global_config, local_config) {
             (Ok(global), Ok(local)) => {
-                let mut keys = keymap::default();
-                if let Some(global_keys) = global.keys {
-                    merge_keys(&mut keys, global_keys)
-                }
-                if let Some(local_keys) = local.keys {
-                    merge_keys(&mut keys, local_keys)
-                }
-
                 let editor = match (global.editor, local.editor) {
                     (None, None) => helix_view::editor::Config::default(),
                     (None, Some(val)) | (Some(val), None) => {
@@ -83,6 +84,14 @@ impl Config {
                         .try_into()
                         .map_err(ConfigLoadError::BadConfig)?,
                 };
+
+                let mut keys = keymap::default_for_grammar(editor.grammar);
+                if let Some(global_keys) = global.keys {
+                    merge_keys(&mut keys, global_keys)
+                }
+                if let Some(local_keys) = local.keys {
+                    merge_keys(&mut keys, local_keys)
+                }
 
                 Config {
                     theme: local.theme.or(global.theme),
@@ -96,17 +105,18 @@ impl Config {
                 return Err(ConfigLoadError::BadConfig(err))
             }
             (Ok(config), Err(_)) | (Err(_), Ok(config)) => {
-                let mut keys = keymap::default();
+                let editor: helix_view::editor::Config = config.editor.map_or_else(
+                    || Ok(helix_view::editor::Config::default()),
+                    |val| val.try_into().map_err(ConfigLoadError::BadConfig),
+                )?;
+                let mut keys = keymap::default_for_grammar(editor.grammar);
                 if let Some(keymap) = config.keys {
                     merge_keys(&mut keys, keymap);
                 }
                 Config {
                     theme: config.theme,
                     keys,
-                    editor: config.editor.map_or_else(
-                        || Ok(helix_view::editor::Config::default()),
-                        |val| val.try_into().map_err(ConfigLoadError::BadConfig),
-                    )?,
+                    editor,
                 }
             }
 
