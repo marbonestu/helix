@@ -3031,6 +3031,31 @@ impl Component for EditorView {
 
                 let config = cx.editor.config();
                 let mode = cx.editor.mode();
+
+                // In vim grammar Normal mode, collapse selections to cursor points
+                // so motions move without visible selection highlights.
+                // Skip if an operator is pending (it needs the selection).
+                if config.grammar == helix_view::editor::GrammarMode::Vim
+                    && mode == Mode::Normal
+                    && self.vim_pending_op.is_none()
+                {
+                    let (view, doc) = current!(cx.editor);
+                    let text = doc.text().slice(..);
+                    let selection = doc.selection(view.id).clone();
+                    // Only collapse if any range is wider than a single grapheme
+                    let needs_collapse = selection.iter().any(|r| {
+                        let from = r.from();
+                        let next = helix_core::graphemes::next_grapheme_boundary(text, from);
+                        r.to() > next
+                    });
+                    if needs_collapse {
+                        let collapsed = selection.transform(|range| {
+                            Range::point(range.cursor(text))
+                        });
+                        doc.set_selection(view.id, collapsed);
+                    }
+                }
+
                 let (view, doc) = current!(cx.editor);
 
                 view.ensure_cursor_in_view(doc, config.scrolloff);
