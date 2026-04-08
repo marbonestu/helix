@@ -467,6 +467,9 @@ pub fn vim_default() -> HashMap<Mode, KeyTrie> {
 
         "home" => goto_line_start,
         "end" => goto_line_end,
+        "$" => goto_line_end,
+        "^" => goto_first_nonwhitespace,
+        "_" => goto_first_nonwhitespace,
 
         "w" => move_next_word_start,
         "b" => move_prev_word_start,
@@ -475,6 +478,8 @@ pub fn vim_default() -> HashMap<Mode, KeyTrie> {
         "W" => move_next_long_word_start,
         "B" => move_prev_long_word_start,
         "E" => move_next_long_word_end,
+
+        "%" => match_brackets,
 
         "v" => vim_visual_mode_char,
         "V" => vim_visual_mode_line,
@@ -528,9 +533,10 @@ pub fn vim_default() -> HashMap<Mode, KeyTrie> {
         "x" => delete_char_forward,
         "X" => delete_char_backward,
         "s" => change_selection,
-        "S" => select_regex,
+        "S" => vim_substitute_line,
         "C" => vim_change_to_line_end,
         "D" => vim_delete_to_line_end,
+        "Y" => vim_yank_line,
         "J" => join_selections,
         "p" => paste_after,
         "P" => paste_before,
@@ -781,12 +787,23 @@ pub fn vim_default() -> HashMap<Mode, KeyTrie> {
 
         "esc" => normal_mode,
 
+        // Text-object selection (override insert/append from normal clone)
+        "i" => select_textobject_inner,
+        "a" => select_textobject_around,
+
         // Operators in visual mode act immediately on selection
         "d" => delete_selection,
+        "x" => delete_selection,
         "c" => change_selection,
+        "s" => change_selection,
         "y" => vim_visual_yank,
         ">" => indent,
         "<" => unindent,
+        "J" => join_selections,
+        "u" => switch_to_lowercase,
+        "U" => switch_to_uppercase,
+        "~" => switch_case,
+        "p" => replace_with_yanked,
 
         // v/V toggle between visual sub-types or exit
         "v" => vim_visual_mode_char,
@@ -804,7 +821,15 @@ pub fn vim_default() -> HashMap<Mode, KeyTrie> {
             "S" => extend_flash_jump,
         },
 
+        "G" => extend_to_last_line,
         "0" => extend_to_line_start,
+        "$" => extend_to_line_end,
+        "^" => extend_to_first_nonwhitespace,
+
+        // Disable insert/append entering from visual mode
+        "I" => no_op,
+        "A" => no_op,
+        "O" => no_op,
     }));
 
     let insert = keymap!({ "Insert mode"

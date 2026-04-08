@@ -661,6 +661,8 @@ impl MappableCommand {
         vim_change_to_line_end, "Vim: change to end of line",
         vim_delete_to_line_end, "Vim: delete to end of line",
         vim_dot_repeat, "Vim: repeat last operator+motion",
+        vim_yank_line, "Vim: yank current line",
+        vim_substitute_line, "Vim: substitute entire line",
     );
 }
 
@@ -7882,6 +7884,47 @@ fn vim_delete_to_line_end(cx: &mut Context) {
     });
     doc.set_selection(view.id, selection);
     delete_selection_impl(cx, Operation::Delete, YankAction::Yank);
+}
+
+fn vim_yank_line(cx: &mut Context) {
+    let count = cx.count();
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        let line = range.cursor_line(text);
+        let start = text.line_to_char(line);
+        let end_line = (line + count).min(text.len_lines());
+        let end = text.line_to_char(end_line);
+        Range::new(start, end)
+    });
+    doc.set_selection(view.id, selection);
+    yank_impl(
+        cx.editor,
+        cx.register
+            .unwrap_or(cx.editor.config().default_yank_register),
+    );
+    // Collapse selection back to cursor
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        Range::point(range.cursor(text))
+    });
+    doc.set_selection(view.id, selection);
+}
+
+fn vim_substitute_line(cx: &mut Context) {
+    let count = cx.count();
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        let line = range.cursor_line(text);
+        let start = text.line_to_char(line);
+        let end_line = (line + count).min(text.len_lines());
+        let end = text.line_to_char(end_line);
+        Range::new(start, end)
+    });
+    doc.set_selection(view.id, selection);
+    delete_selection_impl(cx, Operation::Change, YankAction::Yank);
 }
 
 fn vim_dot_repeat(cx: &mut Context) {
