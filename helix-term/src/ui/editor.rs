@@ -1249,6 +1249,60 @@ impl EditorView {
                 }
             }
 
+            // Compound motions starting with `g` (e.g. `gg` = goto file start)
+            key!('g') => {
+                let pending_for_g = pending;
+                cxt.on_next_key_callback = Some((
+                    Box::new(move |cx: &mut commands::Context, g_event: KeyEvent| {
+                        let extend_cmd = match g_event {
+                            key!('g') => Some(commands::MappableCommand::extend_to_file_start),
+                            key!('e') => Some(commands::MappableCommand::extend_to_last_line),
+                            _ => None,
+                        };
+                        if let Some(cmd) = extend_cmd {
+                            let pre = pending_for_g.pre_count.map_or(1usize, |n| n.get());
+                            let motion = cx.editor.count.map_or(1usize, |n| n.get());
+                            let total = pre * motion;
+                            cx.editor.count = None;
+                            cx.count = std::num::NonZeroUsize::new(total);
+
+                            cmd.execute(cx);
+
+                            if let Some(reg) = pending_for_g.register {
+                                cx.register = Some(reg);
+                            }
+
+                            let op = pending_for_g.op;
+                            let register = pending_for_g.register;
+                            let motion_keys = vec![key!('g'), g_event];
+                            cx.callback.push(Box::new(move |compositor, cx2| {
+                                if let Some(editor_view) = compositor
+                                    .find::<crate::ui::EditorView>()
+                                {
+                                    let mut fake_cx = commands::Context {
+                                        register,
+                                        count: std::num::NonZeroUsize::new(total),
+                                        editor: cx2.editor,
+                                        callback: Vec::new(),
+                                        on_next_key_callback: None,
+                                        jobs: cx2.jobs,
+                                    };
+                                    editor_view.vim_apply_operator(&mut fake_cx, &op);
+                                    editor_view.vim_last_action =
+                                        Some(crate::vim::VimRepeatAction {
+                                            register,
+                                            total_count: total,
+                                            op,
+                                            motion_keys,
+                                        });
+                                }
+                            }));
+                        }
+                    }),
+                    OnKeyCallbackKind::PseudoPending,
+                ));
+            }
+
             // Motion key → look up extend_* equivalent, execute it, apply operator
             _ => {
                 let pre = pending.pre_count.map_or(1usize, |n| n.get());
@@ -1260,18 +1314,63 @@ impl EditorView {
                 if let Some(extend_cmd) = Self::vim_motion_to_extend(event) {
                     extend_cmd.execute(cxt);
 
-                    if let Some(reg) = pending.register {
-                        cxt.register = Some(reg);
-                    }
-                    self.vim_apply_operator(cxt, &pending.op);
+                    // If the motion set an on_next_key callback (like f/t/F/T),
+                    // wrap it to apply the operator after the motion completes.
+                    if cxt.on_next_key_callback.is_some() {
+                        let op = pending.op;
+                        let register = pending.register;
+                        let motion_event = event;
+                        if let Some((orig_cb, kind)) = cxt.on_next_key_callback.take() {
+                            cxt.on_next_key_callback = Some((
+                                Box::new(move |cx: &mut commands::Context, char_event: KeyEvent| {
+                                    orig_cb(cx, char_event);
 
-                    // Record for dot-repeat
-                    self.vim_last_action = Some(crate::vim::VimRepeatAction {
-                        register: pending.register,
-                        total_count: total,
-                        op: pending.op,
-                        motion_keys: vec![event],
-                    });
+                                    let motion_keys = vec![motion_event, char_event];
+                                    cx.callback.push(Box::new(move |compositor, cx2| {
+                                        if let Some(editor_view) = compositor
+                                            .find::<crate::ui::EditorView>()
+                                        {
+                                            let mut fake_cx = commands::Context {
+                                                register,
+                                                count: std::num::NonZeroUsize::new(total),
+                                                editor: cx2.editor,
+                                                callback: Vec::new(),
+                                                on_next_key_callback: None,
+                                                jobs: cx2.jobs,
+                                            };
+                                            editor_view.vim_apply_operator(&mut fake_cx, &op);
+                                            editor_view.vim_last_action =
+                                                Some(crate::vim::VimRepeatAction {
+                                                    register,
+                                                    total_count: total,
+                                                    op,
+                                                    motion_keys,
+                                                });
+                                        }
+                                    }));
+                                }),
+                                kind,
+                            ));
+                        }
+                    } else {
+                        // For linewise motions (j/k), expand selection to full lines
+                        if Self::vim_is_linewise_motion(event) {
+                            Self::vim_expand_to_line_bounds(cxt.editor);
+                        }
+
+                        if let Some(reg) = pending.register {
+                            cxt.register = Some(reg);
+                        }
+                        self.vim_apply_operator(cxt, &pending.op);
+
+                        // Record for dot-repeat
+                        self.vim_last_action = Some(crate::vim::VimRepeatAction {
+                            register: pending.register,
+                            total_count: total,
+                            op: pending.op,
+                            motion_keys: vec![event],
+                        });
+                    }
                 }
                 // Unrecognized key → cancel (pending already taken)
             }
@@ -1328,10 +1427,28 @@ impl EditorView {
         }
     }
 
+    /// Whether a vim motion in operator-pending mode should be linewise.
+    fn vim_is_linewise_motion(event: KeyEvent) -> bool {
+        matches!(event, key!('j') | key!(Down) | key!('k') | key!(Up))
+    }
+
+    /// Expand the current selection to full line boundaries (linewise).
+    fn vim_expand_to_line_bounds(editor: &mut Editor) {
+        let (view, doc) = current!(editor);
+        let text = doc.text().slice(..);
+        let selection = doc.selection(view.id).clone().transform(|range| {
+            let from_line = text.char_to_line(range.from());
+            let to_line = text.char_to_line(range.to());
+            let start = text.line_to_char(from_line);
+            let end = text.line_to_char((to_line + 1).min(text.len_lines()));
+            Range::new(start, end)
+        });
+        doc.set_selection(view.id, selection);
+    }
+
     /// Map a vim motion keypress to the corresponding `extend_*` command.
     pub fn vim_motion_to_extend(event: KeyEvent) -> Option<commands::MappableCommand> {
         use commands::MappableCommand as C;
-        use helix_view::keyboard::KeyCode;
 
         Some(match event {
             key!('h') | key!(Left) => C::extend_char_left,
@@ -1352,16 +1469,9 @@ impl EditorView {
             key!('$') | key!(End) => C::extend_to_line_end,
             key!(Home) => C::extend_to_line_start,
             key!('G') => C::extend_to_last_line,
+            key!('^') => C::extend_to_first_nonwhitespace,
             key!('n') => C::extend_search_next,
             key!('N') => C::extend_search_prev,
-            KeyEvent {
-                code: KeyCode::Char('g'),
-                modifiers: helix_view::keyboard::KeyModifiers::NONE,
-            } => {
-                // gg motion — extend to file start
-                // TODO: handle as a sub-keymap (g then g)
-                C::extend_to_file_start
-            }
             _ => return None,
         })
     }

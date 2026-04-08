@@ -7941,6 +7941,20 @@ fn vim_dot_repeat(cx: &mut Context) {
                     };
                     let ch = action.motion_keys[1].char().unwrap_or('w');
                     vim_select_textobject_char(&mut fake_cx, objtype, ch);
+                } else if action.motion_keys.len() == 2
+                    && action.motion_keys[0].char() == Some('g')
+                {
+                    // Compound motion like `gg`, `ge`
+                    let extend_cmd = match action.motion_keys[1].char() {
+                        Some('g') => Some(MappableCommand::extend_to_file_start),
+                        Some('e') => Some(MappableCommand::extend_to_last_line),
+                        _ => None,
+                    };
+                    if let Some(cmd) = extend_cmd {
+                        cmd.execute(&mut fake_cx);
+                    } else {
+                        return;
+                    }
                 } else if let Some(extend_cmd) = EditorView::vim_motion_to_extend(
                     action.motion_keys[0],
                 ) {

@@ -171,7 +171,14 @@ where
         Mode::Insert => &modenames.insert,
         Mode::Select => &modenames.select,
         Mode::Normal => &modenames.normal,
-        Mode::Visual => &modenames.visual,
+        Mode::Visual => {
+            use helix_view::editor::VisualKind;
+            match context.editor.visual_kind {
+                Some(VisualKind::Line) => "V-LINE",
+                Some(VisualKind::Block) => "V-BLOCK",
+                _ => &modenames.visual,
+            }
+        }
     };
     let content = if visible {
         format!(" {mode_str} ")
