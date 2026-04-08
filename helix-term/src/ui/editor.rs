@@ -999,7 +999,7 @@ impl EditorView {
         None
     }
 
-    fn insert_mode(&mut self, cx: &mut commands::Context, event: KeyEvent) {
+    pub fn insert_mode(&mut self, cx: &mut commands::Context, event: KeyEvent) {
         if let Some(keyresult) = self.handle_keymap_event(Mode::Insert, cx, event) {
             match keyresult {
                 KeymapResult::NotFound => {

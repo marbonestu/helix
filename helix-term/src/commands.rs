@@ -7950,6 +7950,21 @@ fn vim_dot_repeat(cx: &mut Context) {
                 }
 
                 editor_view.vim_apply_operator(&mut fake_cx, &action.op);
+
+                // For `c` (change), replay the insert keystrokes
+                if action.op == Operator::Change {
+                    let insert_keys = editor_view.last_insert.1.clone();
+                    for insert_event in insert_keys {
+                        match insert_event {
+                            crate::ui::editor::InsertEvent::Key(k) => {
+                                editor_view.insert_mode(&mut fake_cx, k);
+                            }
+                            _ => {}
+                        }
+                    }
+                    // Return to normal mode after replaying inserts
+                    fake_cx.editor.enter_normal_mode();
+                }
             } else {
                 cx2.editor.set_status("Nothing to repeat");
             }
