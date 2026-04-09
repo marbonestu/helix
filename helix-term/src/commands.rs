@@ -608,6 +608,9 @@ impl MappableCommand {
         ts_flash_prev_entry, "Flash-jump to a visible entry/pairing (backward)",
         goto_next_paragraph, "Goto next paragraph",
         goto_prev_paragraph, "Goto previous paragraph",
+        extend_to_next_paragraph, "Extend to next paragraph",
+        extend_to_prev_paragraph, "Extend to previous paragraph",
+        extend_to_matching_bracket, "Extend to matching bracket",
         dap_launch, "Launch debug target",
         dap_restart, "Restart debugging session",
         dap_toggle_breakpoint, "Toggle breakpoint",
@@ -650,13 +653,19 @@ impl MappableCommand {
         rotate_selections_last, "Make the last selection your primary one",
         git_open_file_in_browser, "Open current file on the git hosting website",
         git_open_line_in_browser, "Open current file at the cursor line on the git hosting website",
+        vim_move_next_word_start, "Vim: move to next word start",
+        vim_move_next_long_word_start, "Vim: move to next WORD start",
         vim_operator_delete, "Vim: delete operator (awaits motion)",
         vim_operator_yank, "Vim: yank operator (awaits motion)",
         vim_operator_change, "Vim: change operator (awaits motion)",
         vim_operator_indent, "Vim: indent operator (awaits motion)",
         vim_operator_unindent, "Vim: unindent operator (awaits motion)",
+        vim_operator_uppercase, "Vim: uppercase operator (awaits motion)",
+        vim_operator_lowercase, "Vim: lowercase operator (awaits motion)",
+        vim_operator_switchcase, "Vim: switch case operator (awaits motion)",
         vim_visual_mode_char, "Vim: enter charwise visual mode",
         vim_visual_mode_line, "Vim: enter linewise visual mode",
+        vim_visual_mode_block, "Vim: enter blockwise visual mode",
         vim_visual_yank, "Vim: yank selection and return to normal mode",
         vim_change_to_line_end, "Vim: change to end of line",
         vim_delete_to_line_end, "Vim: delete to end of line",
@@ -1317,6 +1326,46 @@ fn goto_prev_paragraph(cx: &mut Context) {
 
 fn goto_next_paragraph(cx: &mut Context) {
     goto_para_impl(cx, movement::move_next_paragraph)
+}
+
+fn extend_to_prev_paragraph(cx: &mut Context) {
+    let count = cx.count();
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let selection = doc
+        .selection(view.id)
+        .clone()
+        .transform(|range| movement::move_prev_paragraph(text, range, count, Movement::Extend));
+    doc.set_selection(view.id, selection);
+}
+
+fn extend_to_next_paragraph(cx: &mut Context) {
+    let count = cx.count();
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let selection = doc
+        .selection(view.id)
+        .clone()
+        .transform(|range| movement::move_next_paragraph(text, range, count, Movement::Extend));
+    doc.set_selection(view.id, selection);
+}
+
+fn extend_to_matching_bracket(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text();
+    let text_slice = text.slice(..);
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        let pos = range.cursor(text_slice);
+        if let Some(matched_pos) = doc.syntax().map_or_else(
+            || match_brackets::find_matching_bracket_plaintext(text.slice(..), pos),
+            |syntax| match_brackets::find_matching_bracket_fuzzy(syntax, text.slice(..), pos),
+        ) {
+            range.put_cursor(text_slice, matched_pos, true)
+        } else {
+            range
+        }
+    });
+    doc.set_selection(view.id, selection);
 }
 
 fn goto_file_start(cx: &mut Context) {
@@ -7757,6 +7806,37 @@ fn vim_set_pending_operator(cx: &mut Context, op: Operator) {
     }));
 }
 
+/// Vim `w` motion: move cursor to the first character of the next word.
+/// Helix's move_next_word_start places cursor at the last char before
+/// the word boundary; this command corrects to the boundary itself.
+fn vim_move_next_word_start(cx: &mut Context) {
+    let count = cx.count();
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        let word = movement::move_next_word_start(text, range, count);
+        // head is at the word boundary (the target position)
+        let target = word.head.min(text.len_chars().saturating_sub(1));
+        range.put_cursor(text, target, false)
+    });
+    doc.set_selection(view.id, selection);
+}
+
+/// Vim `W` motion: move cursor to the first character of the next WORD.
+fn vim_move_next_long_word_start(cx: &mut Context) {
+    let count = cx.count();
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        let word = movement::move_next_long_word_start(text, range, count);
+        let target = word.head.min(text.len_chars().saturating_sub(1));
+        range.put_cursor(text, target, false)
+    });
+    doc.set_selection(view.id, selection);
+}
+
 fn vim_operator_delete(cx: &mut Context) {
     vim_set_pending_operator(cx, Operator::Delete);
 }
@@ -7775,6 +7855,18 @@ fn vim_operator_indent(cx: &mut Context) {
 
 fn vim_operator_unindent(cx: &mut Context) {
     vim_set_pending_operator(cx, Operator::Unindent);
+}
+
+fn vim_operator_uppercase(cx: &mut Context) {
+    vim_set_pending_operator(cx, Operator::Uppercase);
+}
+
+fn vim_operator_lowercase(cx: &mut Context) {
+    vim_set_pending_operator(cx, Operator::Lowercase);
+}
+
+fn vim_operator_switchcase(cx: &mut Context) {
+    vim_set_pending_operator(cx, Operator::SwitchCase);
 }
 
 fn vim_visual_mode_char(cx: &mut Context) {
@@ -7844,6 +7936,41 @@ fn vim_visual_mode_line(cx: &mut Context) {
     doc.set_selection(view.id, selection);
     cx.editor.mode = Mode::Visual;
     cx.editor.visual_kind = Some(VisualKind::Line);
+}
+
+fn vim_visual_mode_block(cx: &mut Context) {
+    use helix_view::editor::VisualKind;
+
+    if cx.editor.mode == Mode::Visual {
+        if cx.editor.visual_kind == Some(VisualKind::Block) {
+            cx.editor.enter_normal_mode();
+            let (view, doc) = current!(cx.editor);
+            let text = doc.text().slice(..);
+            let selection = doc.selection(view.id).clone().transform(|range| {
+                Range::point(range.cursor(text))
+            });
+            doc.set_selection(view.id, selection);
+            return;
+        }
+        cx.editor.visual_kind = Some(VisualKind::Block);
+        return;
+    }
+
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        if range.is_empty() && range.head == text.len_chars() {
+            Range::new(
+                helix_core::graphemes::prev_grapheme_boundary(text, range.anchor),
+                range.head,
+            )
+        } else {
+            range
+        }
+    });
+    doc.set_selection(view.id, selection);
+    cx.editor.mode = Mode::Visual;
+    cx.editor.visual_kind = Some(VisualKind::Block);
 }
 
 fn vim_visual_yank(cx: &mut Context) {
@@ -8001,7 +8128,38 @@ fn vim_dot_repeat(cx: &mut Context) {
                 } else if let Some(extend_cmd) = EditorView::vim_motion_to_extend(
                     action.motion_keys[0],
                 ) {
+                    // Pre-collapse to cursor point before extending
+                    let cursor_before;
+                    {
+                        let (view, doc) = current!(fake_cx.editor);
+                        let text = doc.text().slice(..);
+                        let sel = doc.selection(view.id).clone();
+                        cursor_before = sel.primary().cursor(text);
+                        let collapsed = sel.transform(|range| {
+                            Range::point(range.cursor(text))
+                        });
+                        doc.set_selection(view.id, collapsed);
+                    }
                     extend_cmd.execute(&mut fake_cx);
+                    // Fix backward motion anchor
+                    {
+                        let (view, doc) = current!(fake_cx.editor);
+                        let sel = doc.selection(view.id).clone();
+                        let fixed = sel.transform(|range| {
+                            if range.head < range.anchor
+                                && range.anchor > cursor_before
+                            {
+                                Range::new(cursor_before, range.head)
+                            } else {
+                                range
+                            }
+                        });
+                        doc.set_selection(view.id, fixed);
+                    }
+                    // Expand to line bounds for linewise motions
+                    if EditorView::vim_is_linewise_motion(action.motion_keys[0]) {
+                        EditorView::vim_expand_to_line_bounds(fake_cx.editor);
+                    }
                 } else {
                     return;
                 }
@@ -8021,6 +8179,31 @@ fn vim_dot_repeat(cx: &mut Context) {
                     }
                     // Return to normal mode after replaying inserts
                     fake_cx.editor.enter_normal_mode();
+                }
+
+                // Normalize cursor for vim normal mode (single-grapheme
+                // selection, not sitting on newline). This runs inside the
+                // callback, after the text has been modified.
+                {
+                    let (view, doc) = current!(fake_cx.editor);
+                    let text = doc.text().slice(..);
+                    let sel = doc.selection(view.id).clone();
+                    let normalized = sel.transform(|range| {
+                        let mut pos = range.cursor(text);
+                        let line = text.char_to_line(pos);
+                        let line_start = text.line_to_char(line);
+                        let line_end =
+                            helix_core::line_ending::line_end_char_index(&text, line);
+                        if pos >= line_end && pos > line_start {
+                            pos = helix_core::graphemes::prev_grapheme_boundary(
+                                text, line_end,
+                            );
+                        }
+                        let end =
+                            helix_core::graphemes::next_grapheme_boundary(text, pos);
+                        Range::new(pos, end)
+                    });
+                    doc.set_selection(view.id, normalized);
                 }
             } else {
                 cx2.editor.set_status("Nothing to repeat");

@@ -471,21 +471,23 @@ pub fn vim_default() -> HashMap<Mode, KeyTrie> {
         "^" => goto_first_nonwhitespace,
         "_" => goto_first_nonwhitespace,
 
-        "w" => move_next_word_start,
+        "w" => vim_move_next_word_start,
         "b" => move_prev_word_start,
         "e" => move_next_word_end,
 
-        "W" => move_next_long_word_start,
+        "W" => vim_move_next_long_word_start,
         "B" => move_prev_long_word_start,
         "E" => move_next_long_word_end,
 
         "%" => match_brackets,
+        "{" => goto_prev_paragraph,
+        "}" => goto_next_paragraph,
 
         "v" => vim_visual_mode_char,
         "V" => vim_visual_mode_line,
-        // C-v for visual block deferred to Phase 7
+        "C-v" => vim_visual_mode_block,
 
-        "G" => goto_line,
+        "G" => goto_last_line,
         "g" => { "Goto"
             "g" => goto_file_start,
             "|" => goto_column,
@@ -512,6 +514,9 @@ pub fn vim_default() -> HashMap<Mode, KeyTrie> {
             "w" => goto_word,
             "S" => flash_jump,
             "/" => flash_search,
+            "U" => vim_operator_uppercase,
+            "u" => vim_operator_lowercase,
+            "~" => vim_operator_switchcase,
         },
         ":" => command_mode,
 
@@ -634,7 +639,6 @@ pub fn vim_default() -> HashMap<Mode, KeyTrie> {
         "A-|" => shell_pipe_to,
         "!" => shell_insert_output,
         "A-!" => shell_append_output,
-        "$" => shell_keep_pipe,
         "C-z" => suspend,
 
         "C-a" => increment,
@@ -805,11 +809,16 @@ pub fn vim_default() -> HashMap<Mode, KeyTrie> {
         "~" => switch_case,
         "p" => replace_with_yanked,
 
-        // v/V toggle between visual sub-types or exit
+        // v/V/C-v toggle between visual sub-types or exit
         "v" => vim_visual_mode_char,
         "V" => vim_visual_mode_line,
+        "C-v" => vim_visual_mode_block,
 
         "o" => flip_selections,
+
+        "{" => extend_to_prev_paragraph,
+        "}" => extend_to_next_paragraph,
+        "%" => extend_to_matching_bracket,
 
         "g" => { "Goto"
             "g" => extend_to_file_start,

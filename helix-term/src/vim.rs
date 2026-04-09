@@ -19,6 +19,9 @@ pub enum Operator {
     Change,
     Indent,
     Unindent,
+    Uppercase,
+    Lowercase,
+    SwitchCase,
 }
 
 impl Operator {
@@ -30,6 +33,10 @@ impl Operator {
             Operator::Change => 'c',
             Operator::Indent => '>',
             Operator::Unindent => '<',
+            // These compound operators don't have a single-key doubled form
+            Operator::Uppercase => '\0',
+            Operator::Lowercase => '\0',
+            Operator::SwitchCase => '\0',
         }
     }
 }

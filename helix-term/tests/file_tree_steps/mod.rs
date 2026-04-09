@@ -1,9 +1,15 @@
+mod bulk_expand_steps;
+mod copy_path_steps;
 mod file_clipboard_steps;
+mod filter_steps;
+mod multi_select_steps;
 mod file_creation_steps;
 mod file_deletion_steps;
 mod file_open_split_steps;
 mod file_rename_steps;
 mod file_watching_steps;
+mod git_event_watching_steps;
+mod git_status_responsiveness_steps;
 mod git_status_steps;
 mod navigation_steps;
 mod search_steps;
@@ -45,6 +51,8 @@ pub struct FileTreeWorld {
     pub last_error: Option<String>,
     /// Name of the selected node captured by a step for later assertions.
     pub captured_node_name: Option<String>,
+    /// Simulated system clipboard contents, written by Y (copy-path) steps.
+    pub system_clipboard: Option<String>,
 }
 
 impl std::fmt::Debug for FileTreeWorld {
@@ -81,6 +89,7 @@ impl FileTreeWorld {
             pending_files: Vec::new(),
             last_error: None,
             captured_node_name: None,
+            system_clipboard: None,
         })
     }
 
@@ -96,13 +105,16 @@ impl FileTreeWorld {
         std::fs::write(root.join("README.md"), "# project").unwrap();
     }
 
-    /// Construct a `FileTree` rooted at `workspace_dir`.
+    /// Construct a `FileTree` rooted at `workspace_dir` with root expanded so
+    /// direct children are immediately visible.
     pub fn init_tree(&mut self) {
         let root = self.workspace_dir.path().to_path_buf();
-        self.tree = Some(
-            FileTree::new(root, &self.tree_config)
-                .expect("failed to construct FileTree for test"),
-        );
+        let mut tree = FileTree::new(root, &self.tree_config)
+            .expect("failed to construct FileTree for test");
+        let config = self.tree_config.clone();
+        let root_id = tree.root_id();
+        tree.expand_sync(root_id, &config);
+        self.tree = Some(tree);
     }
 
     /// Build a live [`Application`] for sidebar / live-editor steps.

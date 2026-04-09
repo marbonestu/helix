@@ -377,12 +377,16 @@ impl Default for Keymaps {
 
 /// Merge default config keys with user overwritten keys for custom user config.
 pub fn merge_keys(dst: &mut HashMap<Mode, KeyTrie>, mut delta: HashMap<Mode, KeyTrie>) {
-    for (mode, keys) in dst {
+    for (mode, keys) in dst.iter_mut() {
         keys.merge_nodes(
             delta
                 .remove(mode)
                 .unwrap_or_else(|| KeyTrie::Node(Arc::new(KeyTrieNode::default()))),
         )
+    }
+    // Insert modes from delta that weren't already in dst
+    for (mode, keys) in delta {
+        dst.insert(mode, keys);
     }
 }
 

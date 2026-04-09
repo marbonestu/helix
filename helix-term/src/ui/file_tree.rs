@@ -102,6 +102,7 @@ pub fn render_file_tree(
 
         let y = content_area.y + i as u16;
         let is_selected = scroll + i == selected;
+        let is_marked = tree.is_selected(node_id);
 
         // Apply selected highlight to full row first so every cell gets the
         // selection background before individual elements are painted over it.
@@ -141,9 +142,9 @@ pub fn render_file_tree(
                 .or_else(|| theme.try_get("diff.delta")),
             GitStatus::Untracked => theme
                 .try_get("ui.sidebar.git.untracked")
-                // `ui.text.inactive` is the standard "muted text" scope used by
-                // most themes for dimmed/inactive content — the same visual
-                // effect as comments without pulling from the comment scope.
+                .or_else(|| theme.try_get("diff.plus")),
+            GitStatus::Ignored => theme
+                .try_get("ui.sidebar.git.ignored")
                 .or_else(|| theme.try_get("ui.text.inactive"))
                 .or_else(|| {
                     theme
@@ -172,17 +173,29 @@ pub fn render_file_tree(
             }
         };
 
+        // Multi-select mark: draw "* " before the expand indicator when the
+        // node is in the selection set.
+        let (mark_x, mark_remaining) = if is_marked && remaining_width >= 2 {
+            let mark_style = theme
+                .try_get("ui.sidebar.selected.mark")
+                .unwrap_or_else(|| text_style.add_modifier(Modifier::BOLD));
+            surface.set_stringn(x, y, "* ", remaining_width, mark_style);
+            (x + 2, remaining_width.saturating_sub(2))
+        } else {
+            (x, remaining_width)
+        };
+
         // Expand/collapse indicator
         let indicator = match node.kind {
             NodeKind::Directory if node.expanded => "▾ ",
             NodeKind::Directory => "▸ ",
             NodeKind::File => "  ",
         };
-        surface.set_stringn(x, y, indicator, remaining_width, text_style);
+        surface.set_stringn(mark_x, y, indicator, mark_remaining, text_style);
 
         // --- Icon -----------------------------------------------------------
-        let mut name_x = x + 2;
-        let mut name_width = remaining_width.saturating_sub(2);
+        let mut name_x = mark_x + 2;
+        let mut name_width = mark_remaining.saturating_sub(2);
 
         if show_icons && name_width >= 3 {
             let (icon, icon_scope) = match node.kind {
@@ -288,7 +301,15 @@ pub fn render_file_tree(
                 };
                 PromptContent::Static(text)
             }
-            PromptMode::None => {
+            PromptMode::DeleteConfirmMulti { paths } => {
+                let names: Vec<&str> = paths
+                    .iter()
+                    .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
+                    .collect();
+                let text = format!("Delete {} items ({})? [y/n]", names.len(), names.join(", "));
+                PromptContent::Static(text)
+            }
+            PromptMode::None | PromptMode::Filter => {
                 // Show status message in a dimmed style
                 let status = tree.status_message().unwrap_or("");
                 let status_style = prompt_style.add_modifier(Modifier::DIM);

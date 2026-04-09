@@ -173,11 +173,22 @@ fn lib_rs_selected(world: &mut FileTreeWorld) {
 #[given(expr = "Cargo.toml is currently selected")]
 fn cargo_toml_currently_selected(world: &mut FileTreeWorld) {
     let tree = world.tree.as_mut().expect("no FileTree");
+    // If search is active, cancel it first so we can select cleanly, then
+    // restart search with the correct pre_prompt_selected anchor pointing at
+    // Cargo.toml (not root). Otherwise typing a query would jump away because
+    // the anchor was still at position 0.
+    let was_searching = tree.search_active();
+    if was_searching {
+        tree.search_cancel();
+    }
     let pos = tree.visible().iter().position(|&id| {
         tree.nodes().get(id).map(|n| n.name == "Cargo.toml").unwrap_or(false)
     });
     if let Some(p) = pos {
         tree.move_to(p);
+    }
+    if was_searching {
+        tree.search_start();
     }
 }
 
@@ -227,7 +238,12 @@ fn alex_presses_y(world: &mut FileTreeWorld) {
             super::file_deletion_steps::alex_presses_y_confirm(world);
         }
         _ => {
-            super::file_clipboard_steps::alex_presses_y(world);
+            let has_sel = world.tree.as_ref().expect("no FileTree").has_selection();
+            if has_sel {
+                world.tree.as_mut().expect("no FileTree").yank_selection();
+            } else {
+                super::file_clipboard_steps::alex_presses_y(world);
+            }
         }
     }
 }
@@ -291,7 +307,7 @@ fn alex_presses_escape_search(world: &mut FileTreeWorld) {
     let tree = world.tree.as_mut().expect("no FileTree");
     match tree.prompt_mode() {
         PromptMode::Search => tree.search_cancel(),
-        PromptMode::None => {}
+        PromptMode::None => tree.clear_selection(),
         _ => tree.prompt_cancel(),
     }
 }

@@ -80,7 +80,27 @@ pub fn get_current_head_name(file: &Path) -> Result<Arc<ArcSwap<Box<str>>>> {
 }
 
 pub fn for_each_changed_file(cwd: &Path, f: impl Fn(Result<FileChange>) -> bool) -> Result<()> {
-    status(&open_repo(cwd)?.to_thread_local(), f)
+    status(&open_repo(cwd)?.to_thread_local(), f, true)
+}
+
+/// Like [`for_each_changed_file`] but skips untracked files. Used for the
+/// first phase of a two-phase git status scan so that tracked-file changes
+/// are visible before the slower untracked-file walk completes.
+pub fn for_each_changed_file_tracked_only(
+    cwd: &Path,
+    f: impl Fn(Result<FileChange>) -> bool,
+) -> Result<()> {
+    status(&open_repo(cwd)?.to_thread_local(), f, false)
+}
+
+/// Reports only untracked files. Used for the second phase of a two-phase
+/// git status scan so that untracked files are added to results already
+/// populated by [`for_each_changed_file_tracked_only`].
+pub fn for_each_untracked_files(
+    cwd: &Path,
+    f: impl Fn(Result<FileChange>) -> bool,
+) -> Result<()> {
+    status_untracked_only(&open_repo(cwd)?.to_thread_local(), f)
 }
 
 fn open_repo(path: &Path) -> Result<ThreadSafeRepository> {
@@ -126,7 +146,15 @@ fn open_repo(path: &Path) -> Result<ThreadSafeRepository> {
 }
 
 /// Emulates the result of running `git status` from the command line.
-fn status(repo: &Repository, f: impl Fn(Result<FileChange>) -> bool) -> Result<()> {
+///
+/// When `include_untracked` is `false`, [`FileChange::Untracked`] entries from
+/// the index-worktree walk are suppressed, enabling a fast first-phase scan
+/// that only reports tracked-file changes.
+fn status(
+    repo: &Repository,
+    f: impl Fn(Result<FileChange>) -> bool,
+    include_untracked: bool,
+) -> Result<()> {
     let work_dir = repo
         .workdir()
         .ok_or_else(|| anyhow::anyhow!("working tree not found"))?
@@ -237,11 +265,19 @@ fn status(repo: &Repository, f: impl Fn(Result<FileChange>) -> bool) -> Result<(
                     // "changed file" picker. One example of this being used
                     // is Jujutsu, a Git-compatible VCS. It marks all new files
                     // with `--intent-to-add` automatically.
-                    EntryStatus::IntentToAdd => FileChange::Untracked { path },
+                    EntryStatus::IntentToAdd => {
+                        if !include_untracked {
+                            continue;
+                        }
+                        FileChange::Untracked { path }
+                    }
                     _ => continue,
                 }
             }
             Item::DirectoryContents { entry, .. } if entry.status == Status::Untracked => {
+                if !include_untracked {
+                    continue;
+                }
                 FileChange::Untracked {
                     path: work_dir.join(entry.rela_path.to_path()?),
                 }
@@ -254,6 +290,59 @@ fn status(repo: &Repository, f: impl Fn(Result<FileChange>) -> bool) -> Result<(
                 from_path: work_dir.join(source.rela_path().to_path()?),
                 to_path: work_dir.join(dirwalk_entry.rela_path.to_path()?),
             },
+            _ => continue,
+        };
+        if !f(Ok(change)) {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+/// Reports only untracked files from the working tree.
+///
+/// This is equivalent to the `Item::DirectoryContents` branch with
+/// `Status::Untracked` and the `EntryStatus::IntentToAdd` branch from
+/// [`status`], but skips all tracked-file processing for speed.
+fn status_untracked_only(repo: &Repository, f: impl Fn(Result<FileChange>) -> bool) -> Result<()> {
+    let work_dir = repo
+        .workdir()
+        .ok_or_else(|| anyhow::anyhow!("working tree not found"))?
+        .to_path_buf();
+
+    let status_platform = repo
+        .status(gix::progress::Discard)?
+        .untracked_files(UntrackedFiles::Files)
+        .index_worktree_rewrites(Some(Rewrites {
+            copies: None,
+            percentage: Some(0.5),
+            limit: 1000,
+            ..Default::default()
+        }));
+
+    let empty_patterns = vec![];
+    let status_iter = status_platform.into_index_worktree_iter(empty_patterns)?;
+
+    for item in status_iter {
+        let Ok(item) = item.map_err(|err| f(Err(err.into()))) else {
+            continue;
+        };
+        let change = match item {
+            Item::Modification {
+                rela_path, status, ..
+            } => {
+                let path = work_dir.join(rela_path.to_path()?);
+                match status {
+                    EntryStatus::IntentToAdd => FileChange::Untracked { path },
+                    _ => continue,
+                }
+            }
+            Item::DirectoryContents { entry, .. } if entry.status == Status::Untracked => {
+                FileChange::Untracked {
+                    path: work_dir.join(entry.rela_path.to_path()?),
+                }
+            }
             _ => continue,
         };
         if !f(Ok(change)) {

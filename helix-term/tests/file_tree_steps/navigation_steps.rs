@@ -3,7 +3,7 @@
 /// Most steps exercise `FileTree` directly (library-level) for speed.
 /// Steps that open a file ("Enter on a file", "l on a file") require
 /// a live Application because they interact with the buffer list.
-use cucumber::{given, then, when};
+use cucumber::{given, gherkin::Step, then, when};
 use helix_view::file_tree::NodeKind;
 
 use super::FileTreeWorld;
@@ -12,15 +12,53 @@ use super::FileTreeWorld;
 // Given — project structure / Background
 // ---------------------------------------------------------------------------
 
+/// Creates the project structure described in the step's docstring.
+///
+/// Each line is an indented path entry. Lines ending with `/` become
+/// directories; others become empty files. Indentation (spaces or the
+/// tree-drawing characters `│`, `├`, `└`, `─`) is stripped so only the
+/// bare name matters. The root `project/` line is skipped.
 #[given(expr = "the project contains the structure:")]
-fn project_contains_structure(world: &mut FileTreeWorld) {
-    // The standard project structure is already created by the Background step
-    // "the file tree sidebar is visible and focused". This step is a docstring
-    // description of that structure; the filesystem was already populated.
-    if world.tree.is_none() {
+fn project_contains_structure(world: &mut FileTreeWorld, step: &Step) {
+    let root = world.workspace_dir.path();
+    if let Some(doc) = &step.docstring {
+        let mut path_stack: Vec<(usize, std::path::PathBuf)> = Vec::new();
+        for line in doc.lines() {
+            // Strip tree-drawing and whitespace characters to get the raw name.
+            let trimmed = line
+                .trim_start_matches(|c: char| c.is_whitespace() || "│├└─ ".contains(c));
+            if trimmed.is_empty() || trimmed.starts_with("project/") {
+                continue;
+            }
+            let indent = line.len() - line.trim_start().len();
+            // Pop path stack entries that are at the same or deeper indent level.
+            while let Some(&(d, _)) = path_stack.last() {
+                if d >= indent {
+                    path_stack.pop();
+                } else {
+                    break;
+                }
+            }
+            let parent = path_stack
+                .last()
+                .map(|(_, p)| p.clone())
+                .unwrap_or_else(|| root.to_path_buf());
+            let name = trimmed.trim_end_matches('/');
+            let full = parent.join(name);
+            if trimmed.ends_with('/') {
+                std::fs::create_dir_all(&full).unwrap();
+                path_stack.push((indent, full));
+            } else {
+                if let Some(parent_dir) = full.parent() {
+                    std::fs::create_dir_all(parent_dir).unwrap();
+                }
+                std::fs::write(&full, "").unwrap();
+            }
+        }
+    } else {
         world.create_project_structure();
-        world.init_tree();
     }
+    world.init_tree();
 }
 
 // ---------------------------------------------------------------------------

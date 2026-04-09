@@ -31,6 +31,7 @@ use helix_view::{
     keyboard::{KeyCode, KeyModifiers},
     Document, Editor, Theme, View,
 };
+use helix_stdx::rope::RopeSliceExt;
 use std::{mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc, time::Instant};
 
 use tui::{buffer::Buffer as Surface, text::Span};
@@ -1050,8 +1051,13 @@ impl EditorView {
                 let i = i.to_digit(10).unwrap() as usize;
                 cxt.editor.count = NonZeroUsize::new(i);
             }
-            // special handling for repeat operator
-            (key!('.'), _) if self.keymaps.pending().is_empty() => {
+            // special handling for repeat operator (helix grammar only;
+            // vim grammar uses vim_dot_repeat via the keymap instead)
+            (key!('.'), _)
+                if self.keymaps.pending().is_empty()
+                    && cxt.editor.config().grammar
+                        != helix_view::editor::GrammarMode::Vim =>
+            {
                 for _ in 0..cxt.editor.count.map_or(1, NonZeroUsize::into) {
                     // first execute whatever put us into insert mode
                     self.last_insert.0.execute(cxt);
@@ -1206,6 +1212,18 @@ impl EditorView {
                 cxt.editor.count = None;
                 cxt.count = std::num::NonZeroUsize::new(total);
 
+                // Collapse selection to cursor point before selecting text object,
+                // so the selection starts from the exact cursor position.
+                {
+                    let (view, doc) = current!(cxt.editor);
+                    let text = doc.text().slice(..);
+                    let sel = doc.selection(view.id).clone();
+                    let collapsed = sel.transform(|range| {
+                        Range::point(range.cursor(text))
+                    });
+                    doc.set_selection(view.id, collapsed);
+                }
+
                 // Call select_textobject which will set on_next_key to wait for obj char
                 commands::select_textobject(cxt, objtype);
 
@@ -1266,7 +1284,41 @@ impl EditorView {
                             cx.editor.count = None;
                             cx.count = std::num::NonZeroUsize::new(total);
 
+                            // Pre-collapse and save cursor for backward fix
+                            let cursor_before;
+                            {
+                                let (view, doc) = current!(cx.editor);
+                                let text = doc.text().slice(..);
+                                let sel = doc.selection(view.id).clone();
+                                cursor_before = sel.primary().cursor(text);
+                                let collapsed = sel.transform(|range| {
+                                    Range::point(range.cursor(text))
+                                });
+                                doc.set_selection(view.id, collapsed);
+                            }
+
                             cmd.execute(cx);
+
+                            // Fix backward motion anchor
+                            {
+                                let (view, doc) = current!(cx.editor);
+                                let sel = doc.selection(view.id).clone();
+                                let fixed = sel.transform(|range| {
+                                    if range.head < range.anchor
+                                        && range.anchor > cursor_before
+                                    {
+                                        Range::new(cursor_before, range.head)
+                                    } else {
+                                        range
+                                    }
+                                });
+                                doc.set_selection(view.id, fixed);
+                            }
+
+                            // Expand to full lines for linewise gg motion
+                            if g_event == key!('g') {
+                                EditorView::vim_expand_to_line_bounds(cx.editor);
+                            }
 
                             if let Some(reg) = pending_for_g.register {
                                 cx.register = Some(reg);
@@ -1312,7 +1364,42 @@ impl EditorView {
                 cxt.count = std::num::NonZeroUsize::new(total);
 
                 if let Some(extend_cmd) = Self::vim_motion_to_extend(event) {
+                    // Collapse selection to cursor point before extending,
+                    // so the extend motion starts from the exact cursor
+                    // position and doesn't include the cursor's grapheme.
+                    let cursor_before;
+                    {
+                        let (view, doc) = current!(cxt.editor);
+                        let text = doc.text().slice(..);
+                        let sel = doc.selection(view.id).clone();
+                        cursor_before = sel.primary().cursor(text);
+                        let collapsed = sel.transform(|range| {
+                            Range::point(range.cursor(text))
+                        });
+                        doc.set_selection(view.id, collapsed);
+                    }
                     extend_cmd.execute(cxt);
+
+                    // Fix backward motions: put_cursor with extend adjusts
+                    // the anchor forward by one grapheme when changing
+                    // direction, causing the operator to delete the cursor
+                    // character. Clamp the anchor back to the original cursor
+                    // position so the delete range is [target, cursor) not
+                    // [target, cursor].
+                    {
+                        let (view, doc) = current!(cxt.editor);
+                        let sel = doc.selection(view.id).clone();
+                        let fixed = sel.transform(|range| {
+                            if range.head < range.anchor
+                                && range.anchor > cursor_before
+                            {
+                                Range::new(cursor_before, range.head)
+                            } else {
+                                range
+                            }
+                        });
+                        doc.set_selection(view.id, fixed);
+                    }
 
                     // If the motion set an on_next_key callback (like f/t/F/T),
                     // wrap it to apply the operator after the motion completes.
@@ -1405,12 +1492,18 @@ impl EditorView {
             }
             Operator::Indent => {
                 commands::MappableCommand::indent.execute(cxt);
-                // Collapse selection after indent
+                // Move cursor to first non-whitespace character on the line
                 let (view, doc) = current!(cxt.editor);
                 let text = doc.text().slice(..);
                 let selection =
                     doc.selection(view.id).clone().transform(|range| {
-                        Range::point(range.cursor(text))
+                        let line = range.cursor_line(text);
+                        let line_start = text.line_to_char(line);
+                        let first_nws = text.line(line)
+                            .first_non_whitespace_char()
+                        .map(|c| line_start + c)
+                        .unwrap_or(line_start);
+                        Range::point(first_nws)
                     });
                 doc.set_selection(view.id, selection);
             }
@@ -1420,7 +1513,41 @@ impl EditorView {
                 let text = doc.text().slice(..);
                 let selection =
                     doc.selection(view.id).clone().transform(|range| {
-                        Range::point(range.cursor(text))
+                        let line = range.cursor_line(text);
+                        let line_start = text.line_to_char(line);
+                        let first_nws = text.line(line)
+                            .first_non_whitespace_char()
+                        .map(|c| line_start + c)
+                        .unwrap_or(line_start);
+                        Range::point(first_nws)
+                    });
+                doc.set_selection(view.id, selection);
+            }
+            Operator::Uppercase => {
+                commands::MappableCommand::switch_to_uppercase.execute(cxt);
+                // Collapse to start of selection (vim cursor stays at beginning)
+                let (view, doc) = current!(cxt.editor);
+                let selection =
+                    doc.selection(view.id).clone().transform(|range| {
+                        Range::point(range.from())
+                    });
+                doc.set_selection(view.id, selection);
+            }
+            Operator::Lowercase => {
+                commands::MappableCommand::switch_to_lowercase.execute(cxt);
+                let (view, doc) = current!(cxt.editor);
+                let selection =
+                    doc.selection(view.id).clone().transform(|range| {
+                        Range::point(range.from())
+                    });
+                doc.set_selection(view.id, selection);
+            }
+            Operator::SwitchCase => {
+                commands::MappableCommand::switch_case.execute(cxt);
+                let (view, doc) = current!(cxt.editor);
+                let selection =
+                    doc.selection(view.id).clone().transform(|range| {
+                        Range::point(range.from())
                     });
                 doc.set_selection(view.id, selection);
             }
@@ -1428,12 +1555,12 @@ impl EditorView {
     }
 
     /// Whether a vim motion in operator-pending mode should be linewise.
-    fn vim_is_linewise_motion(event: KeyEvent) -> bool {
+    pub fn vim_is_linewise_motion(event: KeyEvent) -> bool {
         matches!(event, key!('j') | key!(Down) | key!('k') | key!(Up))
     }
 
     /// Expand the current selection to full line boundaries (linewise).
-    fn vim_expand_to_line_bounds(editor: &mut Editor) {
+    pub fn vim_expand_to_line_bounds(editor: &mut Editor) {
         let (view, doc) = current!(editor);
         let text = doc.text().slice(..);
         let selection = doc.selection(view.id).clone().transform(|range| {
@@ -1472,6 +1599,9 @@ impl EditorView {
             key!('^') => C::extend_to_first_nonwhitespace,
             key!('n') => C::extend_search_next,
             key!('N') => C::extend_search_prev,
+            key!('{') => C::extend_to_prev_paragraph,
+            key!('}') => C::extend_to_next_paragraph,
+            key!('%') => C::extend_to_matching_bracket,
             _ => return None,
         })
     }
@@ -3034,26 +3164,34 @@ impl Component for EditorView {
 
                 // In vim grammar Normal mode, collapse selections to cursor points
                 // so motions move without visible selection highlights.
-                // Skip if an operator is pending (it needs the selection).
+                // Skip if an operator is pending or callbacks are queued
+                // (operator-pending text objects push compositor callbacks
+                // that need the selection intact).
                 if config.grammar == helix_view::editor::GrammarMode::Vim
                     && mode == Mode::Normal
                     && self.vim_pending_op.is_none()
+                    && callbacks.is_empty()
+                    && self.on_next_key.is_none()
                 {
                     let (view, doc) = current!(cx.editor);
                     let text = doc.text().slice(..);
-                    let selection = doc.selection(view.id).clone();
-                    // Only collapse if any range is wider than a single grapheme
-                    let needs_collapse = selection.iter().any(|r| {
-                        let from = r.from();
-                        let next = helix_core::graphemes::next_grapheme_boundary(text, from);
-                        r.to() > next
+                    // Collapse multi-grapheme selections to a single-grapheme
+                    // cursor at the vim-correct position.
+                    let sel = doc.selection(view.id).clone();
+                    let normalized = sel.transform(|range| {
+                        let mut pos = range.cursor(text);
+                        // In vim normal mode, cursor should not sit on a line ending.
+                        // Clamp back to the last non-newline char on the line.
+                        let line = text.char_to_line(pos);
+                        let line_start = text.line_to_char(line);
+                        let line_end = helix_core::line_ending::line_end_char_index(&text, line);
+                        if pos >= line_end && pos > line_start {
+                            pos = helix_core::graphemes::prev_grapheme_boundary(text, line_end);
+                        }
+                        let end = helix_core::graphemes::next_grapheme_boundary(text, pos);
+                        Range::new(pos, end)
                     });
-                    if needs_collapse {
-                        let collapsed = selection.transform(|range| {
-                            Range::point(range.cursor(text))
-                        });
-                        doc.set_selection(view.id, collapsed);
-                    }
+                    doc.set_selection(view.id, normalized);
                 }
 
                 let (view, doc) = current!(cx.editor);

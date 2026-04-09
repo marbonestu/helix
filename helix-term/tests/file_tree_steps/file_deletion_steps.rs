@@ -109,9 +109,19 @@ fn readonly_file_selected(world: &mut FileTreeWorld) {
 // When
 // ---------------------------------------------------------------------------
 
+pub fn alex_presses_d_pub(world: &mut FileTreeWorld) {
+    alex_presses_d(world);
+}
+
 #[when("Alex presses d")]
 fn alex_presses_d(world: &mut FileTreeWorld) {
-    open_delete_prompt(world);
+    let tree = world.tree.as_mut().expect("no FileTree");
+    if tree.has_selection() {
+        let paths = tree.selected_paths();
+        tree.start_delete_confirm_multi(paths);
+    } else {
+        open_delete_prompt(world);
+    }
 }
 
 pub fn alex_presses_y_confirm(world: &mut FileTreeWorld) {

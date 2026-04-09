@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -87,6 +87,9 @@ slotmap::new_key_type! {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitStatus {
     Clean,
+    /// File is tracked by gitignore rules and excluded from version control.
+    /// Shown with a dimmed style; does not propagate to parent directories.
+    Ignored,
     Untracked,
     Added,
     Staged,
@@ -100,6 +103,7 @@ impl GitStatus {
     pub fn severity(self) -> u8 {
         match self {
             GitStatus::Clean => 0,
+            GitStatus::Ignored => 0,
             GitStatus::Untracked => 1,
             GitStatus::Added => 2,
             GitStatus::Staged => 3,
@@ -142,6 +146,10 @@ pub enum PromptMode {
     None,
     /// Incremental filename search (triggered by `/`).
     Search,
+    /// Filter-as-you-type: hides rows whose names do not match the query
+    /// (triggered by `f`). Unlike `Search`, this narrows the visible set
+    /// rather than jumping between matches.
+    Filter,
     /// New file name input. Stores the resolved target directory.
     NewFile { parent_dir: PathBuf },
     /// New directory name input.
@@ -153,6 +161,9 @@ pub enum PromptMode {
     /// Delete y/n confirmation. Carries the NodeId being deleted and whether
     /// the target is a directory (affects the confirmation prompt text).
     DeleteConfirm { id: NodeId, is_dir: bool },
+    /// Delete y/n confirmation for a batch of paths collected from the
+    /// multi-select set. The Vec holds the resolved paths to delete.
+    DeleteConfirmMulti { paths: Vec<PathBuf> },
 }
 
 /// Clipboard operation type.
@@ -163,10 +174,16 @@ pub enum ClipboardOp {
 }
 
 /// Entry stored in the file tree clipboard.
+///
+/// Holds one or more source paths so that multi-selected files can be
+/// copied, cut, or moved in a single paste operation.
 #[derive(Debug, Clone)]
 pub struct ClipboardEntry {
-    pub path: PathBuf,
-    /// NodeId of the clipped node for O(1) identity checks during render.
+    /// Paths staged for the operation. Single-file operations still use a
+    /// one-element vec so callers always iterate uniformly.
+    pub paths: Vec<PathBuf>,
+    /// NodeId of the primary clipped node for O(1) identity checks during
+    /// render. For multi-select operations this is the first selected node.
     pub node_id: NodeId,
     pub op: ClipboardOp,
 }
@@ -181,6 +198,8 @@ pub enum PromptCommit {
     Rename { old_path: PathBuf, new_name: String },
     Duplicate { src_path: PathBuf, new_name: String },
     DeleteConfirmed(PathBuf),
+    /// Confirmed deletion of multiple paths from a multi-select operation.
+    DeleteConfirmedMulti(Vec<PathBuf>),
     DeleteCancelled,
 }
 
@@ -189,6 +208,11 @@ pub enum FileTreeUpdate {
     ChildrenLoaded {
         parent: NodeId,
         entries: Vec<(String, NodeKind)>,
+        /// Names of entries in this directory that are excluded by gitignore
+        /// rules. Only populated when `git_ignore` is disabled so that ignored
+        /// files appear in the tree with a visual marker rather than being
+        /// hidden.
+        ignored_names: HashSet<String>,
     },
     /// Sent once before the first `GitStatus` batch of a refresh cycle so
     /// stale entries from the previous cycle can be discarded.
@@ -216,6 +240,17 @@ pub enum FileTreeUpdate {
     ExternalChange {
         dir: PathBuf,
     },
+    /// Sent by the `.git` directory watcher when git state changes
+    /// (commit, checkout, rebase, stash). Triggers a git status refresh.
+    GitDirEvent,
+    /// Sent after the first (tracked-files-only) phase of a git status scan
+    /// completes. The tree can re-render at this point; untracked files will
+    /// follow in the second phase.
+    GitStatusPhase1Complete,
+    /// Sent after the full git status scan (including untracked files) has
+    /// finished. Clears `git_refresh_in_progress` so any pending refresh can
+    /// be dispatched.
+    GitStatusEnd,
 }
 
 pub struct FileTree {
@@ -236,15 +271,27 @@ pub struct FileTree {
     update_rx: mpsc::Receiver<FileTreeUpdate>,
 
     /// Flat git status: path → status for changed files.
+    /// This is the live map used during rendering. It is updated incrementally
+    /// as scan batches arrive and replaced atomically at `GitStatusEnd`.
     git_status_map: HashMap<PathBuf, GitStatus>,
+    /// Accumulates results from the current background scan. Swapped into
+    /// `git_status_map` at `GitStatusEnd` to atomically remove stale entries.
+    git_status_new: HashMap<PathBuf, GitStatus>,
     /// Pre-computed worst status per directory path.
     dir_status_cache: HashMap<PathBuf, GitStatus>,
     /// Set to true when `git_status_map` changes or new nodes are loaded,
     /// so `rebuild_dir_status_cache` runs once at the end of `process_updates`
     /// rather than once per incoming message.
     git_status_dirty: bool,
-    /// Debounce timer for git status refresh (1000ms).
+    /// Debounce timer for the initial git status refresh.
     git_refresh_deadline: Option<Instant>,
+    /// True while a background git status scan is running. Prevents overlapping
+    /// refreshes from being spawned concurrently.
+    git_refresh_in_progress: bool,
+    /// True when a git refresh was requested while one was already in progress.
+    /// Causes a second refresh to be spawned immediately after the current one
+    /// sends `GitStatusEnd`.
+    git_refresh_pending: bool,
     /// Debounce state for follow-current-file (100ms).
     follow_target: Option<PathBuf>,
     follow_deadline: Option<Instant>,
@@ -262,8 +309,20 @@ pub struct FileTree {
     pre_prompt_selected: usize,
     /// Clipboard for copy/cut/paste.
     clipboard: Option<ClipboardEntry>,
+    /// Set of nodes that are currently marked for batch operations (multi-select).
+    selected_nodes: HashSet<NodeId>,
+    /// Active filter query. When `Some`, `rebuild_visible` hides nodes whose
+    /// names don't contain the query (plus their ancestors).
+    filter_query: Option<String>,
     /// Transient status message shown in the bottom row when no prompt is active.
     status_message: Option<String>,
+    /// Nodes awaiting async child loads as part of a `expand_all` operation.
+    /// When `ChildrenLoaded` arrives for a node in this set, expansion continues
+    /// into the newly loaded directory children.
+    pending_expand_all: HashSet<NodeId>,
+    /// Depth limit captured at the start of the current `expand_all` call, used
+    /// to resume expansion after async child loads complete.
+    expand_all_depth_limit: usize,
     /// Receives the `Debouncer` from the background watcher-init task.
     /// Polled by `process_updates()`; cleared once the debouncer is stored.
     watcher_init: Option<std::sync::mpsc::Receiver<Debouncer<RecommendedWatcher>>>,
@@ -271,6 +330,12 @@ pub struct FileTree {
     /// Populated on the first `process_updates()` after the background init
     /// task completes. `None` if watching is unavailable or disabled.
     _watcher: Option<Debouncer<RecommendedWatcher>>,
+    /// Receives the git-directory `Debouncer` from the background init task.
+    /// Polled by `process_updates()`; cleared once the debouncer is stored.
+    git_watcher_init: Option<std::sync::mpsc::Receiver<Debouncer<RecommendedWatcher>>>,
+    /// Watcher for the `.git` directory. Feeds `GitDirEvent` into the update
+    /// channel whenever git state changes (commit, checkout, rebase, stash).
+    _git_watcher: Option<Debouncer<RecommendedWatcher>>,
 }
 
 impl std::fmt::Debug for FileTree {
@@ -301,6 +366,49 @@ fn build_dir_walker(path: &Path, config: &FileTreeConfig) -> ignore::Walk {
         .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
         .add_custom_ignore_filename(".helix/ignore")
         .build()
+}
+
+/// Returns names of entries in `path` that would be filtered by gitignore
+/// rules. Only performs the detection when `git_ignore` is disabled in
+/// `config` (when it is enabled, ignored files are already hidden and don't
+/// need to be marked separately).
+fn detect_ignored_names(path: &Path, config: &FileTreeConfig) -> HashSet<String> {
+    if config.git_ignore {
+        return HashSet::new();
+    }
+    // Walk the directory a second time with gitignore rules enabled to build
+    // the set of names that would survive filtering.
+    let ignored_config = FileTreeConfig {
+        git_ignore: true,
+        ..config.clone()
+    };
+    let non_ignored: HashSet<String> = build_dir_walker(path, &ignored_config)
+        .filter_map(|r| r.ok())
+        .filter(|e| e.path() != path)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+
+    // Any name present in the unrestricted walk but absent from the
+    // gitignore-filtered walk is a gitignored entry.
+    build_dir_walker(path, config)
+        .filter_map(|r| r.ok())
+        .filter(|e| e.path() != path)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| !non_ignored.contains(name))
+        .collect()
+}
+
+/// Walk up from `start` looking for a `.git` directory. Returns its path if
+/// found, or `None` if the filesystem root is reached without finding one.
+fn find_git_dir(start: &Path) -> Option<PathBuf> {
+    let mut current = start;
+    loop {
+        let candidate = current.join(".git");
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+        current = current.parent()?;
+    }
 }
 
 impl FileTree {
@@ -341,6 +449,13 @@ impl FileTree {
             }
         });
 
+        // Spawn the git-directory watcher on a blocking thread. It watches
+        // `.git/` for changes that indicate git state transitions (commit,
+        // checkout, rebase, stash) that don't touch working-tree files.
+        let git_watcher_rx = find_git_dir(&root).map(|git_dir| {
+            Self::spawn_git_watcher_init(git_dir, update_tx.clone())
+        });
+
         let mut tree = Self {
             root,
             root_id,
@@ -353,9 +468,12 @@ impl FileTree {
             update_tx,
             update_rx,
             git_status_map: HashMap::new(),
+            git_status_new: HashMap::new(),
             dir_status_cache: HashMap::new(),
             git_status_dirty: false,
             git_refresh_deadline: None,
+            git_refresh_in_progress: false,
+            git_refresh_pending: false,
             follow_target: None,
             follow_deadline: None,
             pending_reveal: None,
@@ -365,9 +483,15 @@ impl FileTree {
             prompt_cursor: 0,
             pre_prompt_selected: 0,
             clipboard: None,
+            selected_nodes: HashSet::new(),
+            filter_query: None,
             status_message: None,
+            pending_expand_all: HashSet::new(),
+            expand_all_depth_limit: 0,
             watcher_init: Some(watcher_done_rx),
             _watcher: None,
+            git_watcher_init: git_watcher_rx,
+            _git_watcher: None,
         };
 
         // Load root children synchronously so the tree is populated on
@@ -402,9 +526,12 @@ impl FileTree {
             update_tx,
             update_rx,
             git_status_map: HashMap::new(),
+            git_status_new: HashMap::new(),
             dir_status_cache: HashMap::new(),
             git_status_dirty: false,
             git_refresh_deadline: None,
+            git_refresh_in_progress: false,
+            git_refresh_pending: false,
             follow_target: None,
             follow_deadline: None,
             pending_reveal: None,
@@ -414,9 +541,15 @@ impl FileTree {
             prompt_cursor: 0,
             pre_prompt_selected: 0,
             clipboard: None,
+            selected_nodes: HashSet::new(),
+            filter_query: None,
             status_message: None,
+            pending_expand_all: HashSet::new(),
+            expand_all_depth_limit: 0,
             watcher_init: None,
             _watcher: None,
+            git_watcher_init: None,
+            _git_watcher: None,
         }
     }
 
@@ -470,6 +603,71 @@ impl FileTree {
                 None
             }
         }
+    }
+
+    /// Spawn a background task that watches `git_dir` for changes and sends
+    /// [`FileTreeUpdate::GitDirEvent`] via `tx` whenever git state changes.
+    ///
+    /// Lock files (`.lock`) and editor temporaries (`_null-ls_`, `.tmp`) are
+    /// filtered out to avoid spurious refreshes during in-progress git operations.
+    ///
+    /// Returns a receiver that yields the `Debouncer` once the watcher is ready.
+    /// The caller stores this in `git_watcher_init` and polls it in
+    /// `process_updates()`, matching the pattern used by `watcher_init`.
+    fn spawn_git_watcher_init(
+        git_dir: PathBuf,
+        tx: mpsc::Sender<FileTreeUpdate>,
+    ) -> std::sync::mpsc::Receiver<Debouncer<RecommendedWatcher>> {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        tokio::task::spawn_blocking(move || {
+            let result = new_debouncer(
+                Duration::from_millis(500),
+                move |res: DebounceEventResult| {
+                    let events = match res {
+                        Ok(ev) => ev,
+                        Err(_) => return,
+                    };
+                    let should_refresh = events.iter().any(|event| {
+                        let path = &event.path;
+                        // Skip git lock files: they are created at the start of
+                        // a git operation and removed when it finishes. Reacting
+                        // to them would trigger a stale read.
+                        if path.extension().map_or(false, |e| e == "lock") {
+                            return false;
+                        }
+                        // Skip editor temporary files that land inside .git/.
+                        let file_name =
+                            path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                        if file_name.contains("_null-ls_") || file_name.ends_with(".tmp") {
+                            return false;
+                        }
+                        true
+                    });
+                    if should_refresh {
+                        let _ = tx.blocking_send(FileTreeUpdate::GitDirEvent);
+                        helix_event::request_redraw();
+                    }
+                },
+            );
+            match result {
+                Ok(mut debouncer) => {
+                    if let Err(e) =
+                        debouncer.watcher().watch(&git_dir, RecursiveMode::Recursive)
+                    {
+                        log::warn!(
+                            "file tree: failed to watch git dir {}: {e}",
+                            git_dir.display()
+                        );
+                        return;
+                    }
+                    let _ = done_tx.send(debouncer);
+                }
+                Err(e) => {
+                    log::warn!("file tree: failed to start git directory watcher: {e}");
+                }
+            }
+        });
+        done_rx
     }
 
     pub fn root(&self) -> &Path {
@@ -575,6 +773,109 @@ impl FileTree {
         self.rebuild_visible();
     }
 
+    /// Collapse all directories to root level. The selected node is preserved by
+    /// `rebuild_visible`, which restores selection by node ID rather than position.
+    pub fn collapse_all(&mut self) {
+        for (_, node) in self.nodes.iter_mut() {
+            if node.kind == NodeKind::Directory && node.parent.is_some() {
+                node.expanded = false;
+            }
+        }
+        self.pending_expand_all.clear();
+        self.visible_dirty = true;
+    }
+
+    /// Recursively expand `start_id` and all of its loaded descendants.
+    /// Directories whose children have not yet been loaded are marked expanded
+    /// and queued for an async load; expansion resumes automatically when
+    /// `ChildrenLoaded` arrives for those nodes.
+    ///
+    /// Expansion is capped at `config.max_depth` (default 10) to prevent
+    /// unbounded traversal of very deep trees.
+    pub fn expand_all(&mut self, start_id: NodeId, config: &FileTreeConfig) {
+        let limit = config.max_depth.unwrap_or(10) as usize;
+        self.expand_all_depth_limit = limit;
+        let start_depth = self.nodes.get(start_id).map(|n| n.depth as usize).unwrap_or(0);
+        self.expand_subtree(start_id, start_depth, limit, config);
+        self.visible_dirty = true;
+    }
+
+    /// Synchronously expand `start_id` and all of its descendants by loading
+    /// children from disk as needed. Intended for tests where async task
+    /// completion cannot be awaited. Capped at `config.max_depth`.
+    pub fn expand_all_sync(&mut self, start_id: NodeId, config: &FileTreeConfig) {
+        let limit = config.max_depth.unwrap_or(10) as usize;
+        self.expand_all_depth_limit = limit;
+        let start_depth = self.nodes.get(start_id).map(|n| n.depth as usize).unwrap_or(0);
+        self.expand_subtree_sync_impl(start_id, start_depth, limit, config);
+        self.visible_dirty = true;
+        self.rebuild_visible();
+    }
+
+    fn expand_subtree_sync_impl(
+        &mut self,
+        id: NodeId,
+        depth: usize,
+        limit: usize,
+        config: &FileTreeConfig,
+    ) {
+        let Some(node) = self.nodes.get(id) else { return };
+        if node.kind != NodeKind::Directory {
+            return;
+        }
+        if depth >= limit {
+            self.set_status(format!(
+                "Expansion stopped at depth {limit} (max-depth limit reached)"
+            ));
+            return;
+        }
+        if !self.nodes.get(id).map(|n| n.loaded).unwrap_or(false) {
+            self.load_children_sync(id, config);
+        }
+        if let Some(n) = self.nodes.get_mut(id) {
+            n.expanded = true;
+        }
+        let children = self.nodes.get(id).map(|n| n.children.clone()).unwrap_or_default();
+        for child_id in children {
+            self.expand_subtree_sync_impl(child_id, depth + 1, limit, config);
+        }
+    }
+
+    fn expand_subtree(
+        &mut self,
+        id: NodeId,
+        depth: usize,
+        limit: usize,
+        config: &FileTreeConfig,
+    ) {
+        let Some(node) = self.nodes.get(id) else { return };
+        if node.kind != NodeKind::Directory {
+            return;
+        }
+        if depth >= limit {
+            self.set_status(format!(
+                "Expansion stopped at depth {limit} (max-depth limit reached)"
+            ));
+            return;
+        }
+
+        let loaded = node.loaded;
+        if let Some(n) = self.nodes.get_mut(id) {
+            n.expanded = true;
+        }
+
+        if !loaded {
+            self.pending_expand_all.insert(id);
+            self.spawn_load_children(id, config);
+            return;
+        }
+
+        let children: Vec<NodeId> = self.nodes.get(id).map(|n| n.children.clone()).unwrap_or_default();
+        for child_id in children {
+            self.expand_subtree(child_id, depth + 1, limit, config);
+        }
+    }
+
     /// Remove a node and all its descendants from the slotmap.
     fn remove_subtree(&mut self, id: NodeId) {
         let children = self.nodes.get(id).map(|n| n.children.clone()).unwrap_or_default();
@@ -593,16 +894,38 @@ impl FileTree {
         }
     }
 
-    /// Clear the git status map as if a new refresh cycle had started.
-    /// Use in tests to verify stale entries are removed between cycles.
+    /// Reset all pending git-refresh state. Use in tests to start from a
+    /// known-clean baseline before asserting no refresh is triggered.
+    pub fn clear_git_refresh_for_test(&mut self) {
+        self.git_refresh_deadline = None;
+        self.git_refresh_pending = false;
+        self.git_refresh_in_progress = false;
+    }
+
+    /// Clear the git status map as if a refresh cycle completed with no results.
+    /// Use in tests to verify stale entries are removed when a scan completes.
     pub fn clear_git_status_map_for_test(&mut self) {
         self.git_status_map.clear();
+        self.git_status_new.clear();
         self.git_status_dirty = true;
     }
 
     /// Returns `true` when no git status entries have been received yet.
     pub fn git_status_map_is_empty(&self) -> bool {
         self.git_status_map.is_empty()
+    }
+
+    /// Set `git_refresh_in_progress` to `true`. Used in tests to simulate
+    /// a background scan that is currently running.
+    pub fn simulate_git_refresh_in_progress(&mut self) {
+        self.git_refresh_in_progress = true;
+        self.git_status_new.clear();
+    }
+
+    /// Returns `true` if a deferred git refresh is queued (set while a scan
+    /// was in progress so that one more scan fires when the current one ends).
+    pub fn has_pending_deferred_git_refresh(&self) -> bool {
+        self.git_refresh_pending
     }
 
     /// Synchronously re-scan all expanded directories, replacing stale node
@@ -751,9 +1074,12 @@ impl FileTree {
                 a_kind.cmp(b_kind).then(a_name.cmp(b_name))
             });
 
+            let ignored_names = detect_ignored_names(&path, &config);
+
             let _ = tx.blocking_send(FileTreeUpdate::ChildrenLoaded {
                 parent: node_id,
                 entries,
+                ignored_names,
             });
             helix_event::request_redraw();
         });
@@ -787,6 +1113,7 @@ impl FileTree {
     fn load_children_sync(&mut self, node_id: NodeId, config: &FileTreeConfig) {
         let path = self.node_path(node_id);
         let walker = build_dir_walker(&path, config);
+        let ignored_names = detect_ignored_names(&path, config);
 
         let depth = self.nodes.get(node_id).map(|n| n.depth + 1).unwrap_or(1);
         let mut child_ids = Vec::new();
@@ -806,6 +1133,11 @@ impl FileTree {
                 } else {
                     NodeKind::File
                 };
+                let initial_status = if ignored_names.contains(&name) {
+                    GitStatus::Ignored
+                } else {
+                    GitStatus::Clean
+                };
                 let child_id = self.nodes.insert(FileNode {
                     name,
                     kind,
@@ -814,7 +1146,7 @@ impl FileTree {
                     expanded: false,
                     loaded: false,
                     depth,
-                    cached_git_status: GitStatus::Clean,
+                    cached_git_status: initial_status,
                 });
                 child_ids.push(child_id);
             }
@@ -856,6 +1188,16 @@ impl FileTree {
             }
         }
 
+        // Pick up the git-directory Debouncer once the background init task is ready.
+        if self._git_watcher.is_none() {
+            if let Some(rx) = &self.git_watcher_init {
+                if let Ok(debouncer) = rx.try_recv() {
+                    self._git_watcher = Some(debouncer);
+                    self.git_watcher_init = None;
+                }
+            }
+        }
+
         // Check debounce timers
         if let Some(providers) = diff_providers {
             self.check_git_refresh_timer(providers);
@@ -865,7 +1207,7 @@ impl FileTree {
         // Drain channel
         while let Ok(update) = self.update_rx.try_recv() {
             match update {
-                FileTreeUpdate::ChildrenLoaded { parent, entries } => {
+                FileTreeUpdate::ChildrenLoaded { parent, entries, ignored_names } => {
                     let Some(parent_node) = self.nodes.get(parent) else {
                         continue;
                     };
@@ -892,6 +1234,7 @@ impl FileTree {
 
                     let mut child_ids = Vec::with_capacity(entries.len());
                     for (name, kind) in entries {
+                        let is_ignored = ignored_names.contains(&name);
                         if let Some(existing_id) = old_by_name.remove(&name) {
                             // Entry still exists: update the node in place so
                             // its NodeId (and all grandchild parent pointers)
@@ -900,6 +1243,12 @@ impl FileTree {
                                 node.kind = kind;
                                 node.parent = Some(parent);
                                 node.depth = depth;
+                                // Sync ignored status with the current scan.
+                                if is_ignored {
+                                    node.cached_git_status = GitStatus::Ignored;
+                                } else if node.cached_git_status == GitStatus::Ignored {
+                                    node.cached_git_status = GitStatus::Clean;
+                                }
                             }
                             child_ids.push(existing_id);
                         } else {
@@ -912,7 +1261,11 @@ impl FileTree {
                                 expanded: false,
                                 loaded: false,
                                 depth,
-                                cached_git_status: GitStatus::Clean,
+                                cached_git_status: if is_ignored {
+                                    GitStatus::Ignored
+                                } else {
+                                    GitStatus::Clean
+                                },
                             });
                             child_ids.push(child_id);
                         }
@@ -934,7 +1287,7 @@ impl FileTree {
                     // load was in flight), the ChildrenLoaded for the old ID
                     // was silently dropped. Re-spawn the load so the child's
                     // files appear without requiring another user interaction.
-                    for child_id in child_ids {
+                    for child_id in child_ids.iter().copied() {
                         if let Some(node) = self.nodes.get(child_id) {
                             if node.expanded && !node.loaded {
                                 self.spawn_load_children(child_id, config);
@@ -942,16 +1295,33 @@ impl FileTree {
                         }
                     }
 
+                    // Continue recursive expansion if this parent was queued by
+                    // `expand_all`. Resume expansion into the newly loaded children
+                    // so the full subtree is expanded without user interaction.
+                    if self.pending_expand_all.remove(&parent) {
+                        let parent_depth = self
+                            .nodes
+                            .get(parent)
+                            .map(|n| n.depth as usize)
+                            .unwrap_or(0);
+                        let limit = self.expand_all_depth_limit;
+                        for child_id in child_ids {
+                            self.expand_subtree(child_id, parent_depth + 1, limit, config);
+                        }
+                    }
+
                     self.visible_dirty = true;
                     self.git_status_dirty = true;
                 }
                 FileTreeUpdate::GitStatusBegin => {
-                    // The map is cleared eagerly in spawn_git_status, so this
-                    // message is a no-op. Kept as a variant for compatibility.
+                    // No-op. Kept as a variant for compatibility.
                 }
                 FileTreeUpdate::GitStatus(statuses) => {
                     for (path, status) in statuses {
-                        self.git_status_map.insert(path, status);
+                        // Insert into both the live map (for immediate display)
+                        // and the incoming buffer (for atomic replacement at end).
+                        self.git_status_map.insert(path.clone(), status);
+                        self.git_status_new.insert(path, status);
                     }
                     self.git_status_dirty = true;
                 }
@@ -1012,6 +1382,33 @@ impl FileTree {
                         self.spawn_load_children(id, config);
                     }
                     self.request_git_refresh();
+                }
+                FileTreeUpdate::GitDirEvent => {
+                    // Git state changed (commit, checkout, rebase, stash).
+                    // Schedule a git status refresh to pick up the new state.
+                    self.request_git_refresh();
+                }
+                FileTreeUpdate::GitStatusPhase1Complete => {
+                    // Phase 1 (tracked files) is done. The tree can re-render
+                    // immediately; untracked files will arrive in phase 2.
+                    // No state change needed — git_refresh_in_progress stays true
+                    // until GitStatusEnd.
+                }
+                FileTreeUpdate::GitStatusEnd => {
+                    // The full scan has finished. Atomically replace the live map
+                    // with the incoming buffer so that stale entries from the
+                    // previous cycle are removed all at once.
+                    std::mem::swap(&mut self.git_status_map, &mut self.git_status_new);
+                    self.git_status_new.clear();
+                    self.git_status_dirty = true;
+                    self.git_refresh_in_progress = false;
+                    if self.git_refresh_pending {
+                        self.git_refresh_pending = false;
+                        if let Some(providers) = diff_providers {
+                            let providers = providers.clone();
+                            self.spawn_git_status(providers);
+                        }
+                    }
                 }
             }
         }
@@ -1087,13 +1484,24 @@ impl FileTree {
                 if let Some(&status) = self.git_status_map.get(&path) {
                     return status;
                 }
-                // Inherit untracked from parent directory
+                // Preserve Ignored status assigned by the directory scanner.
+                // This persists across git refreshes because Ignored entries are
+                // not in git_status_map; they live in node.cached_git_status.
+                if node.cached_git_status == GitStatus::Ignored {
+                    return GitStatus::Ignored;
+                }
+                // Inherit Untracked or Ignored from a parent directory.
                 let mut current = id;
                 while let Some(parent_id) = self.nodes.get(current).and_then(|n| n.parent) {
                     let parent_path = self.node_path(parent_id);
                     if let Some(&s) = self.git_status_map.get(&parent_path) {
                         if matches!(s, GitStatus::Untracked) {
                             return s;
+                        }
+                    }
+                    if let Some(parent_node) = self.nodes.get(parent_id) {
+                        if parent_node.cached_git_status == GitStatus::Ignored {
+                            return GitStatus::Ignored;
                         }
                     }
                     current = parent_id;
@@ -1104,7 +1512,14 @@ impl FileTree {
                 .dir_status_cache
                 .get(&path)
                 .copied()
-                .unwrap_or(GitStatus::Clean),
+                .unwrap_or_else(|| {
+                    // Preserve Ignored status for directories not in dir_status_cache.
+                    if node.cached_git_status == GitStatus::Ignored {
+                        GitStatus::Ignored
+                    } else {
+                        GitStatus::Clean
+                    }
+                }),
         }
     }
 
@@ -1118,7 +1533,16 @@ impl FileTree {
 
     /// Rebuild the flat visible list from the tree structure using
     /// stack-based traversal. Preserves the selected node across rebuilds.
+    /// When a filter query is active and non-empty, only matching nodes and
+    /// their ancestors are included regardless of directory expanded state.
     fn rebuild_visible(&mut self) {
+        if let Some(query) = self.filter_query.clone() {
+            if !query.is_empty() {
+                self.rebuild_visible_filtered(&query.to_lowercase());
+                return;
+            }
+        }
+
         // Remember which node was selected so we can restore after rebuild
         let selected_node_id = self.visible.get(self.selected).copied();
 
@@ -1149,6 +1573,71 @@ impl FileTree {
         self.scroll_offset = self.scroll_offset.min(max);
 
         self.visible_dirty = false;
+    }
+
+    /// Build the visible list for a non-empty filter query. Only includes nodes
+    /// whose name contains `query` (case-insensitive) plus all their ancestors.
+    /// Directories with matching descendants are shown even if collapsed.
+    fn rebuild_visible_filtered(&mut self, query: &str) {
+        let selected_node_id = self.visible.get(self.selected).copied();
+        let included = self.filter_included_nodes(query);
+
+        self.visible.clear();
+        let mut stack = vec![self.root_id];
+        while let Some(id) = stack.pop() {
+            if !included.contains(&id) {
+                continue;
+            }
+            self.visible.push(id);
+            if let Some(node) = self.nodes.get(id) {
+                if node.kind == NodeKind::Directory {
+                    for &child in node.children.iter().rev() {
+                        stack.push(child);
+                    }
+                }
+            }
+        }
+
+        if let Some(prev_id) = selected_node_id {
+            if let Some(pos) = self.visible.iter().position(|&id| id == prev_id) {
+                self.selected = pos;
+            }
+        }
+        let max = self.visible.len().saturating_sub(1);
+        self.selected = self.selected.min(max);
+        self.scroll_offset = self.scroll_offset.min(max);
+        self.visible_dirty = false;
+    }
+
+    /// Compute the set of node IDs to include when `query` is active.
+    /// A node is included if its name matches the query OR if any of its
+    /// descendants match (so ancestor directories remain visible as context).
+    fn filter_included_nodes(&self, query: &str) -> std::collections::HashSet<NodeId> {
+        let mut result = std::collections::HashSet::new();
+        fn recurse(
+            tree: &FileTree,
+            id: NodeId,
+            query: &str,
+            result: &mut std::collections::HashSet<NodeId>,
+        ) -> bool {
+            let Some(node) = tree.nodes.get(id) else {
+                return false;
+            };
+            let self_matches = node.name.to_lowercase().contains(query);
+            let children: Vec<NodeId> = node.children.iter().copied().collect();
+            // Must NOT short-circuit: recurse into ALL children so every
+            // matching node gets added to `result`, even after a first match.
+            let any_child_matches = children
+                .iter()
+                .fold(false, |found, &c| recurse(tree, c, query, result) | found);
+            let included = self_matches || any_child_matches;
+            if included {
+                result.insert(id);
+            }
+            included
+        }
+        recurse(self, self.root_id, query, &mut result);
+        result
     }
 
     /// Force an unconditional visible-list rebuild, bypassing the dirty flag.
@@ -1256,6 +1745,11 @@ impl FileTree {
             let from = self.pre_prompt_selected;
             self.search_jump_next_from(from);
         }
+        if matches!(self.prompt_mode, PromptMode::Filter) {
+            self.filter_query = Some(self.prompt_input.clone());
+            self.visible_dirty = true;
+            self.rebuild_visible();
+        }
     }
 
     /// Delete the character immediately before the cursor (backspace).
@@ -1278,6 +1772,11 @@ impl FileTree {
                 let from = self.pre_prompt_selected;
                 self.search_jump_next_from(from);
             }
+        }
+        if matches!(self.prompt_mode, PromptMode::Filter) {
+            self.filter_query = Some(self.prompt_input.clone());
+            self.visible_dirty = true;
+            self.rebuild_visible();
         }
     }
 
@@ -1310,6 +1809,10 @@ impl FileTree {
         if matches!(self.prompt_mode, PromptMode::Search) {
             self.selected = self.pre_prompt_selected;
             self.ensure_selected_visible();
+        }
+        if matches!(self.prompt_mode, PromptMode::Filter) {
+            self.filter_cancel();
+            return;
         }
         self.prompt_mode = PromptMode::None;
         self.prompt_input.clear();
@@ -1389,6 +1892,18 @@ impl FileTree {
                 self.prompt_input.clear();
                 Some(PromptCommit::DeleteConfirmed(path))
             }
+            PromptMode::DeleteConfirmMulti { paths } => {
+                let paths = paths.clone();
+                self.prompt_mode = PromptMode::None;
+                self.prompt_input.clear();
+                self.clear_selection();
+                Some(PromptCommit::DeleteConfirmedMulti(paths))
+            }
+            PromptMode::Filter => {
+                self.prompt_mode = PromptMode::None;
+                self.prompt_input.clear();
+                None
+            }
         };
         commit
     }
@@ -1400,7 +1915,7 @@ impl FileTree {
     }
 
     pub fn search_query(&self) -> &str {
-        if matches!(self.prompt_mode, PromptMode::Search) {
+        if matches!(self.prompt_mode, PromptMode::Search | PromptMode::Filter) {
             &self.prompt_input
         } else {
             ""
@@ -1477,6 +1992,10 @@ impl FileTree {
                 }
             }
         }
+        // No match: restore the pre-search position so the selection doesn't
+        // drift to whatever a shorter prefix happened to match.
+        self.selected = self.pre_prompt_selected;
+        self.ensure_selected_visible();
     }
 
     // --- File management prompts ---
@@ -1545,17 +2064,98 @@ impl FileTree {
     /// Copy the node at `id` to the clipboard (does not move the file).
     pub fn yank(&mut self, id: NodeId) {
         let path = self.node_path(id);
-        self.clipboard = Some(ClipboardEntry { path, node_id: id, op: ClipboardOp::Copy });
+        self.clipboard = Some(ClipboardEntry { paths: vec![path], node_id: id, op: ClipboardOp::Copy });
     }
 
     /// Cut the node at `id` into the clipboard (marks it for a move on paste).
     pub fn cut(&mut self, id: NodeId) {
         let path = self.node_path(id);
-        self.clipboard = Some(ClipboardEntry { path, node_id: id, op: ClipboardOp::Cut });
+        self.clipboard = Some(ClipboardEntry { paths: vec![path], node_id: id, op: ClipboardOp::Cut });
     }
 
     pub fn clear_clipboard(&mut self) {
         self.clipboard = None;
+    }
+
+    // --- Multi-select ---
+
+    /// Toggle the selection mark on the node at `id`. If the node is
+    /// currently marked it is unmarked; otherwise it is added to the selection.
+    pub fn toggle_selection(&mut self, id: NodeId) {
+        if self.selected_nodes.contains(&id) {
+            self.selected_nodes.remove(&id);
+        } else {
+            self.selected_nodes.insert(id);
+        }
+    }
+
+    /// Remove all selection marks without performing any operation.
+    pub fn clear_selection(&mut self) {
+        self.selected_nodes.clear();
+    }
+
+    /// Stage all currently selected paths for a copy operation, then clear the selection.
+    ///
+    /// If no nodes are selected this is a no-op. The caller is responsible for
+    /// checking [`has_selection`] first when single-file yank should be the fallback.
+    pub fn yank_selection(&mut self) -> Option<usize> {
+        if self.selected_nodes.is_empty() {
+            return None;
+        }
+        let paths = self.selected_paths();
+        let count = paths.len();
+        let node_id = self.selected_nodes.iter().copied().next().unwrap();
+        self.clipboard = Some(ClipboardEntry { paths, node_id, op: ClipboardOp::Copy });
+        self.clear_selection();
+        Some(count)
+    }
+
+    /// Stage all currently selected paths for a cut (move) operation, then clear the selection.
+    pub fn cut_selection(&mut self) -> Option<usize> {
+        if self.selected_nodes.is_empty() {
+            return None;
+        }
+        let paths = self.selected_paths();
+        let count = paths.len();
+        let node_id = self.selected_nodes.iter().copied().next().unwrap();
+        self.clipboard = Some(ClipboardEntry { paths, node_id, op: ClipboardOp::Cut });
+        self.clear_selection();
+        Some(count)
+    }
+
+    /// Returns `true` when one or more nodes are currently marked.
+    pub fn has_selection(&self) -> bool {
+        !self.selected_nodes.is_empty()
+    }
+
+    /// Returns whether the given node is in the current multi-select set.
+    pub fn is_selected(&self, id: NodeId) -> bool {
+        self.selected_nodes.contains(&id)
+    }
+
+    /// Resolve all marked node IDs into their full filesystem paths.
+    ///
+    /// Nodes that no longer exist in the tree (e.g. after a refresh) are
+    /// silently skipped.
+    pub fn selected_paths(&self) -> Vec<PathBuf> {
+        self.selected_nodes
+            .iter()
+            .filter_map(|&id| {
+                if self.nodes.contains_key(id) {
+                    Some(self.node_path(id))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Begin a multi-delete confirmation prompt, naming all selected paths.
+    pub fn start_delete_confirm_multi(&mut self, paths: Vec<PathBuf>) {
+        self.pre_prompt_selected = self.selected;
+        self.prompt_input.clear();
+        self.prompt_cursor = 0;
+        self.prompt_mode = PromptMode::DeleteConfirmMulti { paths };
     }
 
     // --- Status message ---
@@ -1570,6 +2170,89 @@ impl FileTree {
 
     pub fn clear_status(&mut self) {
         self.status_message = None;
+    }
+
+    // --- Filter mode ---
+
+    /// Returns `true` while the filter prompt is visible (user is typing).
+    pub fn filter_active(&self) -> bool {
+        matches!(self.prompt_mode, PromptMode::Filter)
+    }
+
+    /// Returns the current filter query text (empty string when no filter).
+    pub fn filter_query_text(&self) -> &str {
+        self.filter_query.as_deref().unwrap_or("")
+    }
+
+    /// Enter filter mode. Expands-all first so every node is searchable.
+    /// Callers that need synchronous test behaviour should call
+    /// `expand_all_sync` before this method.
+    pub fn filter_start(&mut self) {
+        self.pre_prompt_selected = self.selected;
+        self.prompt_mode = PromptMode::Filter;
+        self.prompt_input.clear();
+        self.prompt_cursor = 0;
+        self.filter_query = Some(String::new());
+    }
+
+    /// Append a character to the filter query and rebuild the visible list.
+    pub fn filter_push(&mut self, ch: char) {
+        if !matches!(self.prompt_mode, PromptMode::Filter) {
+            return;
+        }
+        self.prompt_input.push(ch);
+        self.prompt_cursor = self.prompt_input.len();
+        self.filter_query = Some(self.prompt_input.clone());
+        self.visible_dirty = true;
+        self.rebuild_visible();
+    }
+
+    /// Remove the last character from the filter query and rebuild.
+    pub fn filter_pop(&mut self) {
+        if !matches!(self.prompt_mode, PromptMode::Filter) {
+            return;
+        }
+        self.prompt_input.pop();
+        self.prompt_cursor = self.prompt_input.len();
+        self.filter_query = Some(self.prompt_input.clone());
+        self.visible_dirty = true;
+        self.rebuild_visible();
+    }
+
+    /// Confirm the filter: close the prompt but keep the filtered view active.
+    pub fn filter_confirm(&mut self) {
+        if !matches!(self.prompt_mode, PromptMode::Filter) {
+            return;
+        }
+        self.prompt_mode = PromptMode::None;
+        // filter_query stays set so visible list remains filtered.
+    }
+
+    /// Cancel filter mode: clear the query and restore the full unfiltered view.
+    pub fn filter_cancel(&mut self) {
+        if !matches!(self.prompt_mode, PromptMode::Filter) {
+            return;
+        }
+        self.prompt_mode = PromptMode::None;
+        self.prompt_input.clear();
+        self.prompt_cursor = 0;
+        self.filter_query = None;
+        self.selected = self.pre_prompt_selected;
+        self.visible_dirty = true;
+        self.rebuild_visible();
+    }
+
+    // --- Copy path to system clipboard ---
+
+    /// Return the absolute path of the currently selected node as a string and
+    /// set a status message "Copied path: <path>". The caller is responsible
+    /// for writing the returned string to the system clipboard.
+    pub fn copy_path(&mut self) -> Option<String> {
+        let id = self.selected_id()?;
+        let path = self.node_path(id);
+        let path_str = path.to_string_lossy().into_owned();
+        self.set_status(format!("Copied path: {path_str}"));
+        Some(path_str)
     }
 
     // --- Path helpers ---
@@ -1771,17 +2454,38 @@ impl FileTree {
 
     // --- Debounce ---
 
-    const GIT_REFRESH_DEBOUNCE: Duration = Duration::from_millis(1000);
     const FOLLOW_DEBOUNCE: Duration = Duration::from_millis(100);
 
-    /// Queue a debounced git status refresh.
+    /// Request a git status refresh using a call-first-and-last debounce strategy.
+    ///
+    /// - If no refresh is currently running, the refresh spawns immediately.
+    /// - If a refresh is already in progress, sets a pending flag so that one
+    ///   more refresh is started when the current one finishes via
+    ///   . This coalesces any number of concurrent requests into
+    ///   at most one additional scan after the current one completes.
+    ///
+    /// The  argument is required when spawning immediately.
+    /// Call [] instead when you do not have
+    /// providers available (e.g., inside ).
     pub fn request_git_refresh(&mut self) {
-        self.git_refresh_deadline = Some(Instant::now() + Self::GIT_REFRESH_DEBOUNCE);
+        // Fall back to deadline-based scheduling; the actual providers are
+        // supplied by check_git_refresh_timer which has access to them.
+        if self.git_refresh_in_progress {
+            self.git_refresh_pending = true;
+        } else {
+            // Spawn immediately on the next process_updates call via deadline=now.
+            self.git_refresh_deadline = Some(Instant::now());
+        }
     }
 
-    /// Returns `true` if a git status refresh is scheduled but has not fired yet.
+    /// Returns `true` if a git refresh is pending (deadline set or pending flag).
     pub fn has_pending_git_refresh(&self) -> bool {
-        self.git_refresh_deadline.is_some()
+        self.git_refresh_deadline.is_some() || self.git_refresh_pending
+    }
+
+    /// Returns `true` if a git refresh is currently running in the background.
+    pub fn git_refresh_in_progress(&self) -> bool {
+        self.git_refresh_in_progress
     }
 
     /// Queue a follow-current-file reveal. Only sets the deadline once so
@@ -1819,33 +2523,68 @@ impl FileTree {
         }
     }
 
-    /// Spawn a background task to collect git status for all changed files.
+    /// Spawn a two-phase background task to collect git status for all changed files.
+    ///
+    /// Phase 1 scans only tracked files (fast) and sends results immediately,
+    /// then sends `GitStatusPhase1Complete`. Phase 2 scans untracked files,
+    /// sends those results, then sends `GitStatusEnd` to signal completion.
+    ///
+    /// Incoming results accumulate in `git_status_new` alongside the live
+    /// `git_status_map` so the tree continues to show the previous scan's data
+    /// during the refresh (no blank flash). At `GitStatusEnd`, `git_status_map`
+    /// is atomically replaced with `git_status_new` to purge stale entries.
     fn spawn_git_status(&mut self, diff_providers: DiffProviderRegistry) {
-        // Clear stale entries eagerly on the calling thread before the scan
-        // starts. Sending `GitStatusBegin` through the channel was unreliable
-        // because `try_send` silently drops the message when the channel is
-        // full, leaving stale entries from the previous cycle in the map.
-        self.git_status_map.clear();
-        self.git_status_dirty = true;
+        // Only clear the incoming buffer, not the live map. This lets the tree
+        // keep showing previous-cycle data while the new scan is in flight.
+        self.git_status_new.clear();
+        self.git_refresh_in_progress = true;
 
         let tx = self.update_tx.clone();
         let root = self.root.clone();
 
-        diff_providers.for_each_changed_file(root, move |result| {
-            if let Ok(change) = result {
-                let status = match &change {
-                    FileChange::Untracked { .. } => GitStatus::Untracked,
-                    FileChange::Added { .. } => GitStatus::Added,
-                    FileChange::Staged { .. } => GitStatus::Staged,
-                    FileChange::Modified { .. } => GitStatus::Modified,
-                    FileChange::Deleted { .. } => GitStatus::Deleted,
-                    FileChange::Renamed { .. } => GitStatus::Renamed,
-                    FileChange::Conflict { .. } => GitStatus::Conflict,
-                };
-                let path = change.path().to_owned();
-                let _ = tx.blocking_send(FileTreeUpdate::GitStatus(vec![(path, status)]));
-            }
-            true
+        tokio::task::spawn_blocking(move || {
+            // Phase 1: tracked files only (no untracked). Fast because it
+            // skips the directory walk needed to discover untracked files.
+            let tx1 = tx.clone();
+            let root1 = root.clone();
+            let providers1 = diff_providers.clone();
+            providers1.for_each_changed_file_tracked_only_blocking(&root1, |result| {
+                if let Ok(change) = result {
+                    let status = match &change {
+                        FileChange::Untracked { .. } => GitStatus::Untracked,
+                        FileChange::Added { .. } => GitStatus::Added,
+                        FileChange::Staged { .. } => GitStatus::Staged,
+                        FileChange::Modified { .. } => GitStatus::Modified,
+                        FileChange::Deleted { .. } => GitStatus::Deleted,
+                        FileChange::Renamed { .. } => GitStatus::Renamed,
+                        FileChange::Conflict { .. } => GitStatus::Conflict,
+                    };
+                    let path = change.path().to_owned();
+                    let _ = tx1.blocking_send(FileTreeUpdate::GitStatus(vec![(path, status)]));
+                }
+                true
+            });
+            let _ = tx.blocking_send(FileTreeUpdate::GitStatusPhase1Complete);
+
+            // Phase 2: full scan including untracked files.
+            let tx2 = tx.clone();
+            diff_providers.for_each_untracked_files_blocking(&root, |result| {
+                if let Ok(change) = result {
+                    let status = match &change {
+                        FileChange::Untracked { .. } => GitStatus::Untracked,
+                        FileChange::Added { .. } => GitStatus::Added,
+                        FileChange::Staged { .. } => GitStatus::Staged,
+                        FileChange::Modified { .. } => GitStatus::Modified,
+                        FileChange::Deleted { .. } => GitStatus::Deleted,
+                        FileChange::Renamed { .. } => GitStatus::Renamed,
+                        FileChange::Conflict { .. } => GitStatus::Conflict,
+                    };
+                    let path = change.path().to_owned();
+                    let _ = tx2.blocking_send(FileTreeUpdate::GitStatus(vec![(path, status)]));
+                }
+                true
+            });
+            let _ = tx.blocking_send(FileTreeUpdate::GitStatusEnd);
         });
     }
 }
@@ -2109,6 +2848,7 @@ mod tests {
             let _ = tx.blocking_send(FileTreeUpdate::ChildrenLoaded {
                 parent: root_id,
                 entries,
+                ignored_names: HashSet::new(),
             });
         });
 
@@ -2118,7 +2858,7 @@ mod tests {
             .expect("channel closed");
 
         match update {
-            FileTreeUpdate::ChildrenLoaded { parent, entries } => {
+            FileTreeUpdate::ChildrenLoaded { parent, entries, .. } => {
                 assert_eq!(parent, root_id);
                 let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
                 assert!(names.contains(&"subdir"));
@@ -2190,6 +2930,7 @@ mod tests {
                 ("docs".into(), NodeKind::Directory),
                 ("README.md".into(), NodeKind::File),
             ],
+            ignored_names: HashSet::new(),
         })
         .unwrap();
 
@@ -2220,6 +2961,7 @@ mod tests {
         tx.try_send(FileTreeUpdate::ChildrenLoaded {
             parent: root_id,
             entries: vec![("new_file.txt".into(), NodeKind::File)],
+            ignored_names: HashSet::new(),
         })
         .unwrap();
 
@@ -2608,12 +3350,12 @@ mod tests {
 
         tree.yank(main_id);
         let clip = tree.clipboard().unwrap();
-        assert_eq!(clip.path, PathBuf::from("/tmp/project/src/main.rs"));
+        assert_eq!(clip.paths, vec![PathBuf::from("/tmp/project/src/main.rs")]);
         assert_eq!(clip.op, ClipboardOp::Copy);
 
         tree.cut(cargo_id);
         let clip = tree.clipboard().unwrap();
-        assert_eq!(clip.path, PathBuf::from("/tmp/project/Cargo.toml"));
+        assert_eq!(clip.paths, vec![PathBuf::from("/tmp/project/Cargo.toml")]);
         assert_eq!(clip.op, ClipboardOp::Cut);
 
         tree.clear_clipboard();

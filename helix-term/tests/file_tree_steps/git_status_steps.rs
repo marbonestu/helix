@@ -25,13 +25,6 @@ fn alex_opens_file_tree(world: &mut FileTreeWorld) {
     world.init_tree();
 }
 
-#[given("the file tree shows the project root")]
-fn file_tree_shows_root(world: &mut FileTreeWorld) {
-    if world.tree.is_none() {
-        world.create_project_structure();
-        world.init_tree();
-    }
-}
 
 #[given("staged.rs has been staged for addition")]
 fn staged_rs_added(world: &mut FileTreeWorld) {

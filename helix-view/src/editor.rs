@@ -2490,18 +2490,49 @@ impl Editor {
 
         // if leaving append mode, move cursor back by 1
         if doc.restore_cursor {
+            doc.restore_cursor = false;
+            if self.config.load().grammar == GrammarMode::Vim {
+                // Vim: collapse to cursor position moved one left
+                let text = doc.text().slice(..);
+                let selection = doc.selection(view.id).clone().transform(|range| {
+                    let pos = range.cursor(text);
+                    if pos > 0 {
+                        let new_pos = graphemes::prev_grapheme_boundary(text, pos);
+                        let line_start = text.line_to_char(text.char_to_line(pos));
+                        if new_pos >= line_start {
+                            return Range::point(new_pos);
+                        }
+                    }
+                    Range::point(pos)
+                });
+                doc.set_selection(view.id, selection);
+            } else {
+                let text = doc.text().slice(..);
+                let selection = doc.selection(view.id).clone().transform(|range| {
+                    let mut head = range.to();
+                    if range.head > range.anchor {
+                        head = graphemes::prev_grapheme_boundary(text, head);
+                    }
+                    Range::new(range.from(), head)
+                });
+                doc.set_selection(view.id, selection);
+            }
+        } else if self.config.load().grammar == GrammarMode::Vim {
+            // Vim: esc from insert always moves cursor one left
             let text = doc.text().slice(..);
             let selection = doc.selection(view.id).clone().transform(|range| {
-                let mut head = range.to();
-                if range.head > range.anchor {
-                    head = graphemes::prev_grapheme_boundary(text, head);
+                let pos = range.cursor(text);
+                if pos > 0 {
+                    let new_pos = graphemes::prev_grapheme_boundary(text, pos);
+                    // Don't move past line start
+                    let line_start = text.line_to_char(text.char_to_line(pos));
+                    if new_pos >= line_start {
+                        return Range::point(new_pos);
+                    }
                 }
-
-                Range::new(range.from(), head)
+                Range::point(pos)
             });
-
             doc.set_selection(view.id, selection);
-            doc.restore_cursor = false;
         }
     }
 

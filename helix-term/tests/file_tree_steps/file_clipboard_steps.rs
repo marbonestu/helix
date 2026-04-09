@@ -77,56 +77,64 @@ fn do_paste(world: &mut FileTreeWorld) {
         _ => return,
     };
 
-    let file_name = clip.path.file_name().expect("clipboard path has no filename");
-    let dest = dest_dir.join(file_name);
+    // Paste all paths in the clipboard into dest_dir one by one.
+    let primary_path = clip.paths.first().cloned();
+    for src_path in &clip.paths {
+        let file_name = src_path.file_name().expect("clipboard path has no filename");
+        let dest = dest_dir.join(file_name);
 
-    // Collision check
-    if dest.exists() {
-        let rel = dest
-            .strip_prefix(world.workspace_dir.path())
-            .unwrap_or(&dest);
-        let msg = format!("File already exists: {}", rel.display());
-        let tree = world.tree.as_mut().expect("no FileTree");
-        tree.set_status(msg.clone());
-        world.last_error = Some(msg);
-        return;
+        // Collision check
+        if dest.exists() {
+            let rel = dest
+                .strip_prefix(world.workspace_dir.path())
+                .unwrap_or(&dest);
+            let msg = format!("File already exists: {}", rel.display());
+            let tree = world.tree.as_mut().expect("no FileTree");
+            tree.set_status(msg.clone());
+            world.last_error = Some(msg);
+            return;
+        }
+
+        let result = match clip.op {
+            ClipboardOp::Copy => copy_file(src_path, &dest),
+            ClipboardOp::Cut => std::fs::rename(src_path, &dest).or_else(|_| {
+                copy_file(src_path, &dest)?;
+                if src_path.is_dir() {
+                    std::fs::remove_dir_all(src_path)
+                } else {
+                    std::fs::remove_file(src_path)
+                }
+            }),
+        };
+
+        if let Err(e) = result {
+            let tree = world.tree.as_mut().expect("no FileTree");
+            tree.set_status(format!("Paste failed: {e}"));
+            world.last_error = Some(format!("Paste failed: {e}"));
+            return;
+        }
     }
 
-    let result = match clip.op {
-        ClipboardOp::Copy => copy_file(&clip.path, &dest),
-        ClipboardOp::Cut => std::fs::rename(&clip.path, &dest).or_else(|_| {
-            copy_file(&clip.path, &dest)?;
-            if clip.path.is_dir() {
-                std::fs::remove_dir_all(&clip.path)
-            } else {
-                std::fs::remove_file(&clip.path)
-            }
-        }),
-    };
-
-    match result {
-        Ok(()) => {
-            let tree = world.tree.as_mut().expect("no FileTree");
-            if clip.op == ClipboardOp::Cut {
-                tree.clear_clipboard();
-            }
-            tree.refresh_sync(&config);
-            // Select the pasted item
-            let pasted_name = file_name.to_string_lossy().into_owned();
-            let pos = tree.visible().iter().position(|&id| {
-                tree.nodes()
-                    .get(id)
-                    .map(|n| n.name == pasted_name)
-                    .unwrap_or(false)
-            });
-            if let Some(p) = pos {
-                tree.move_to(p);
-            }
+    {
+        let tree = world.tree.as_mut().expect("no FileTree");
+        if clip.op == ClipboardOp::Cut {
+            tree.clear_clipboard();
         }
-        Err(e) => {
-            world.last_error = Some(e.to_string());
-            let tree = world.tree.as_mut().expect("no FileTree");
-            tree.set_status(e.to_string());
+        tree.refresh_sync(&config);
+    }
+
+    if let Some(file_name) = primary_path.as_ref().and_then(|p| p.file_name()) {
+        let tree = world.tree.as_mut().expect("no FileTree");
+        // Select the pasted item
+        let pasted_name = file_name.to_string_lossy().into_owned();
+        let pos = tree.visible().iter().position(|&id| {
+            tree.nodes()
+                .get(id)
+                .map(|n| n.name == pasted_name)
+                .unwrap_or(false)
+        });
+        if let Some(p) = pos {
+            tree.move_to(p);
         }
     }
 }
@@ -253,6 +261,11 @@ pub fn alex_presses_y(world: &mut FileTreeWorld) {
 
 #[when("Alex presses x")]
 fn alex_presses_x(world: &mut FileTreeWorld) {
+    let has_sel = world.tree.as_ref().expect("no FileTree").has_selection();
+    if has_sel {
+        world.tree.as_mut().expect("no FileTree").cut_selection();
+        return;
+    }
     if let Some(id) = world.tree.as_ref().expect("no FileTree").selected_id() {
         let path = world.tree.as_ref().expect("no FileTree").node_path(id);
         let root = world.workspace_dir.path().to_path_buf();
@@ -268,7 +281,7 @@ fn alex_presses_x(world: &mut FileTreeWorld) {
 
 #[when("Alex presses p")]
 fn alex_presses_p(world: &mut FileTreeWorld) {
-    do_paste(world);
+    super::multi_select_steps::do_paste_multi(world);
 }
 
 #[when("Alex presses D")]
@@ -395,8 +408,9 @@ fn check_clipboard(world: &mut FileTreeWorld, name: &str, op: &str) {
     let tree = world.tree.as_ref().expect("no FileTree");
     let clip = tree.clipboard().expect("clipboard is empty");
     let clip_name = clip
-        .path
-        .file_name()
+        .paths
+        .first()
+        .and_then(|p| p.file_name())
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     assert_eq!(
@@ -415,10 +429,16 @@ fn check_clipboard(world: &mut FileTreeWorld, name: &str, op: &str) {
 fn status_confirms(world: &mut FileTreeWorld, expected: String) {
     let tree = world.tree.as_ref().expect("no FileTree");
     let msg = tree.status_message().unwrap_or("");
-    assert!(
-        msg.contains(expected.trim_end_matches('.')),
-        "expected status containing {expected:?} but got {msg:?}"
-    );
+    let expected_trimmed = expected.trim_end_matches('.');
+    // When the expected text uses angle-bracket placeholders like "Prefix: <detail>",
+    // check only the literal prefix before the first placeholder.
+    let ok = if expected_trimmed.contains('<') {
+        let prefix = expected_trimmed.split('<').next().unwrap_or("").trim_end();
+        msg.starts_with(prefix)
+    } else {
+        msg.contains(expected_trimmed)
+    };
+    assert!(ok, "expected status matching {expected_trimmed:?} but got {msg:?}");
 }
 
 #[then("main.rs remains on disk unchanged")]
@@ -449,7 +469,7 @@ fn src_until_pasted(world: &mut FileTreeWorld) {
 fn clipboard_holds_lib(world: &mut FileTreeWorld) {
     let tree = world.tree.as_ref().expect("no FileTree");
     let clip = tree.clipboard().expect("clipboard is empty");
-    let name = clip.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = clip.paths.first().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     assert_eq!(name, "lib.rs", "expected clipboard to hold lib.rs but got {name}");
 }
 
@@ -458,7 +478,7 @@ fn main_not_in_clipboard(world: &mut FileTreeWorld) {
     let tree = world.tree.as_ref().expect("no FileTree");
     let clip = tree.clipboard();
     let holds_main = clip
-        .map(|c| c.path.file_name().map(|n| n == "main.rs").unwrap_or(false))
+        .map(|c| c.paths.first().and_then(|p| p.file_name()).map(|n| n == "main.rs").unwrap_or(false))
         .unwrap_or(false);
     assert!(!holds_main, "expected main.rs to no longer be in clipboard");
 }
@@ -675,7 +695,7 @@ fn dup_dir_message(world: &mut FileTreeWorld) {
 fn lib_rs_shows_c_tag(world: &mut FileTreeWorld) {
     let tree = world.tree.as_ref().expect("no FileTree");
     let clip = tree.clipboard().expect("clipboard is empty");
-    let name = clip.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = clip.paths.first().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     assert_eq!(name, "lib.rs", "expected clipboard to hold lib.rs for (C) tag");
     assert_eq!(clip.op, ClipboardOp::Copy, "expected Copy op for (C) tag");
 }
@@ -689,7 +709,7 @@ fn row_styling_unchanged(_world: &mut FileTreeWorld) {
 fn main_rs_shows_x_tag(world: &mut FileTreeWorld) {
     let tree = world.tree.as_ref().expect("no FileTree");
     let clip = tree.clipboard().expect("clipboard is empty");
-    let name = clip.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = clip.paths.first().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     assert_eq!(name, "main.rs", "expected clipboard to hold main.rs for (X) tag");
     assert_eq!(clip.op, ClipboardOp::Cut, "expected Cut op for (X) tag");
 }
@@ -714,7 +734,7 @@ fn lib_rs_still_c_tag(world: &mut FileTreeWorld) {
 fn main_rs_shows_c_tag(world: &mut FileTreeWorld) {
     let tree = world.tree.as_ref().expect("no FileTree");
     let clip = tree.clipboard().expect("clipboard is empty");
-    let name = clip.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = clip.paths.first().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     assert_eq!(name, "main.rs", "expected clipboard to hold main.rs");
     assert_eq!(clip.op, ClipboardOp::Copy);
 }
@@ -724,7 +744,8 @@ fn lib_rs_no_tag(world: &mut FileTreeWorld) {
     let tree = world.tree.as_ref().expect("no FileTree");
     let clip_is_lib = tree
         .clipboard()
-        .and_then(|c| c.path.file_name())
+        .and_then(|c| c.paths.first())
+        .and_then(|p| p.file_name())
         .map(|n| n == "lib.rs")
         .unwrap_or(false);
     assert!(!clip_is_lib, "expected lib.rs to no longer be in clipboard");
@@ -737,9 +758,3 @@ fn no_files_changed(world: &mut FileTreeWorld) {
     assert_eq!(count, 0, "expected no files pasted into archive/ but found {count}");
 }
 
-#[then("the tree is unchanged")]
-fn tree_unchanged(world: &mut FileTreeWorld) {
-    let tree = world.tree.as_ref().expect("no FileTree");
-    let has_src = tree.nodes().iter().any(|(_, n)| n.name == "src");
-    assert!(has_src, "expected tree to be unchanged after no-op paste");
-}

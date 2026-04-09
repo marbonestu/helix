@@ -75,6 +75,38 @@ impl DiffProviderRegistry {
             }
         });
     }
+
+    /// Blocking variant of [`for_each_changed_file`] that excludes untracked files.
+    ///
+    /// Must be called from a blocking context (e.g., inside `spawn_blocking`). Reports
+    /// only tracked-file changes: modifications, conflicts, staged additions, deletions,
+    /// and renames. Used as the fast first phase of a two-phase git status scan.
+    pub fn for_each_changed_file_tracked_only_blocking(
+        &self,
+        cwd: &Path,
+        f: impl Fn(Result<FileChange>) -> bool,
+    ) {
+        let _ = self
+            .providers
+            .iter()
+            .find_map(|provider| provider.for_each_changed_file_tracked_only(cwd, &f).ok());
+    }
+
+    /// Blocking variant that scans for untracked files only.
+    ///
+    /// Must be called from a blocking context. Complements
+    /// [`for_each_changed_file_tracked_only_blocking`] in the second phase of a two-phase
+    /// git status scan. Only [`FileChange::Untracked`] entries are emitted.
+    pub fn for_each_untracked_files_blocking(
+        &self,
+        cwd: &Path,
+        f: impl Fn(Result<FileChange>) -> bool,
+    ) {
+        let _ = self
+            .providers
+            .iter()
+            .find_map(|provider| provider.for_each_untracked_files(cwd, &f).ok());
+    }
 }
 
 impl Default for DiffProviderRegistry {
@@ -126,6 +158,30 @@ impl DiffProvider {
         match self {
             #[cfg(feature = "git")]
             Self::Git => git::for_each_changed_file(cwd, f),
+            Self::None => bail!("No diff support compiled in"),
+        }
+    }
+
+    fn for_each_changed_file_tracked_only(
+        &self,
+        cwd: &Path,
+        f: impl Fn(Result<FileChange>) -> bool,
+    ) -> Result<()> {
+        match self {
+            #[cfg(feature = "git")]
+            Self::Git => git::for_each_changed_file_tracked_only(cwd, f),
+            Self::None => bail!("No diff support compiled in"),
+        }
+    }
+
+    fn for_each_untracked_files(
+        &self,
+        cwd: &Path,
+        f: impl Fn(Result<FileChange>) -> bool,
+    ) -> Result<()> {
+        match self {
+            #[cfg(feature = "git")]
+            Self::Git => git::for_each_untracked_files(cwd, f),
             Self::None => bail!("No diff support compiled in"),
         }
     }
