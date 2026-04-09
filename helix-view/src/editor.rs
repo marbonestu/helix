@@ -446,6 +446,8 @@ pub struct Config {
     /// This prevents data loss if the editor is interrupted while writing the file, but may
     /// confuse some file watching/hot reloading programs. Defaults to `true`.
     pub atomic_save: bool,
+    /// Automatically reload open buffers when modified externally. Defaults to `false`.
+    pub auto_reload: bool,
     /// Whether to automatically remove all trailing line-endings after the final one on write.
     /// Defaults to `false`.
     pub trim_final_newlines: bool,
@@ -1251,6 +1253,7 @@ impl Default for Config {
             default_line_ending: LineEndingConfig::default(),
             insert_final_newline: true,
             atomic_save: true,
+            auto_reload: false,
             trim_final_newlines: false,
             trim_trailing_whitespace: false,
             smart_tab: Some(SmartTabConfig::default()),
@@ -1941,6 +1944,10 @@ impl Editor {
 
                 self.replace_document_in_view(view_id, id);
 
+                if self.config().auto_reload {
+                    self.auto_reload_document(id);
+                }
+
                 dispatch(DocumentFocusLost {
                     editor: self,
                     doc: id,
@@ -1980,6 +1987,11 @@ impl Editor {
         };
 
         self._refresh();
+
+        if self.config().auto_reload {
+            self.auto_reload_document(id);
+        }
+
         if let Some(focus_lost) = focust_lost {
             dispatch(DocumentFocusLost {
                 editor: self,
@@ -2234,6 +2246,11 @@ impl Editor {
         let prev_id = std::mem::replace(&mut self.tree.focus, view_id);
         doc_mut!(self).mark_as_focused();
 
+        let new_doc = self.tree.get(view_id).doc;
+        if self.config().auto_reload {
+            self.auto_reload_document(new_doc);
+        }
+
         let focus_lost = self.tree.get(prev_id).doc;
         dispatch(DocumentFocusLost {
             editor: self,
@@ -2293,6 +2310,78 @@ impl Editor {
     #[inline]
     pub fn documents_mut(&mut self) -> impl Iterator<Item = &mut Document> {
         self.documents.values_mut()
+    }
+
+    /// Reload a single document if it was externally modified and has no unsaved changes.
+    /// Returns `true` if the document was reloaded.
+    pub fn auto_reload_document(&mut self, doc_id: DocumentId) -> bool {
+        let doc = match self.documents.get(&doc_id) {
+            Some(doc) => doc,
+            None => return false,
+        };
+
+        if doc.is_modified() || !doc.is_externally_modified() {
+            return false;
+        }
+
+        let view_ids: Vec<ViewId> = doc.selections().keys().cloned().collect();
+        if view_ids.is_empty() {
+            return false;
+        }
+
+        let view = view_mut!(self, view_ids[0]);
+        let doc = doc_mut!(self, &doc_id);
+        view.sync_changes(doc);
+
+        if let Err(error) = doc.reload(view, &self.diff_providers) {
+            self.set_error(format!("{}", error));
+            return false;
+        }
+
+        if let Some(path) = doc.path() {
+            self.language_servers
+                .file_event_handler
+                .file_changed(path.clone());
+        }
+
+        let scrolloff = self.config().scrolloff;
+        for view_id in view_ids {
+            let view = view_mut!(self, view_id);
+            let doc = doc_mut!(self, &doc_id);
+            if view.doc == doc_id {
+                view.ensure_cursor_in_view(doc, scrolloff);
+            }
+        }
+
+        true
+    }
+
+    /// Reload all open documents that were externally modified and have no unsaved changes.
+    pub fn auto_reload_all_documents(&mut self) {
+        let doc_ids: Vec<DocumentId> = self
+            .documents()
+            .filter(|doc| !doc.is_modified() && doc.is_externally_modified())
+            .map(|doc| doc.id())
+            .collect();
+
+        let mut reloaded = Vec::new();
+        for doc_id in doc_ids {
+            if self.auto_reload_document(doc_id) {
+                if let Some(name) = self
+                    .documents
+                    .get(&doc_id)
+                    .and_then(|d| d.path())
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().to_string())
+                {
+                    reloaded.push(name);
+                }
+            }
+        }
+
+        if !reloaded.is_empty() {
+            self.set_status(format!("reloaded: {}", reloaded.join(", ")));
+        }
     }
 
     pub fn document_by_path<P: AsRef<Path>>(&self, path: P) -> Option<&Document> {

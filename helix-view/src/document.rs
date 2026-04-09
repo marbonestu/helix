@@ -1255,6 +1255,14 @@ impl Document {
         };
     }
 
+    /// Returns whether the file on disk has been modified since we last read/wrote it.
+    pub fn is_externally_modified(&self) -> bool {
+        self.path()
+            .and_then(|p| p.metadata().ok())
+            .and_then(|m| m.modified().ok())
+            .map_or(false, |mtime| mtime > self.last_saved_time)
+    }
+
     /// Reload the document from its path.
     pub fn reload(
         &mut self,
