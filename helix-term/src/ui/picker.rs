@@ -1,5 +1,6 @@
 mod handlers;
 mod query;
+pub mod modal_picker;
 
 use helix_view::input::KeyEvent;
 use crate::{
@@ -273,6 +274,9 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     pub input_position: InputPosition,
     /// Optional label shown as the picker title
     pub title: Option<String>,
+    /// Optional prefix rendered before the match count (e.g. a mode indicator).
+    /// Set by wrappers such as `ModalPicker` on each mode change.
+    status_prefix: Option<&'static str>,
     /// Caches paths to documents
     preview_cache: HashMap<Arc<Path>, CachedPreview>,
     read_buffer: Vec<u8>,
@@ -399,6 +403,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             show_preview: true,
             input_position: InputPosition::Top,
             title: None,
+            status_prefix: None,
             callback_fn: Box::new(callback_fn),
             default_action: Action::Replace,
             picker_actions: Vec::new(),
@@ -595,11 +600,53 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         self.show_preview = !self.show_preview;
     }
 
-    fn prompt_handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
+    /// Current height of the results list in rows (set by `required_size`).
+    pub fn completion_height(&self) -> u16 {
+        self.completion_height
+    }
+
+    /// Generation counter incremented each time the item stream is restarted.
+    pub fn version(&self) -> usize {
+        self.version.load(atomic::Ordering::Relaxed)
+    }
+
+    /// Set an optional prefix rendered before the match count in the input bar.
+    pub fn set_status_prefix(&mut self, prefix: Option<&'static str>) {
+        self.status_prefix = prefix;
+    }
+
+    /// Build a close callback that stores this picker as `last_picker` unless
+    /// the item set is too large.
+    pub(crate) fn close_callback(&mut self) -> EventResult {
+        let callback: compositor::Callback =
+            if self.matcher.snapshot().item_count() > 1_000_000 {
+                Box::new(|compositor: &mut Compositor, _ctx| {
+                    compositor.pop();
+                })
+            } else {
+                self.version.fetch_add(1, atomic::Ordering::Relaxed);
+                Box::new(|compositor: &mut Compositor, _ctx| {
+                    compositor.last_picker = compositor.pop();
+                })
+            };
+        EventResult::Consumed(Some(callback))
+    }
+
+    pub(crate) fn prompt_handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
         if let EventResult::Consumed(_) = self.prompt.handle_event(event, cx) {
             self.handle_prompt_change(matches!(event, Event::Paste(_)));
         }
         EventResult::Consumed(None)
+    }
+
+    pub(crate) fn refresh_items_if_set(&mut self, editor: &Editor) {
+        if self.refresh_fn.is_some() {
+            self.refresh_items(editor);
+        }
+    }
+
+    pub(crate) fn has_refresh_fn(&self) -> bool {
+        self.refresh_fn.is_some()
     }
 
     fn handle_prompt_change(&mut self, is_paste: bool) {
@@ -795,7 +842,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         // -- Render the input bar:
 
         let count = format!(
-            "{}{}/{}",
+            "{}{}{}/{}",
+            self.status_prefix.as_deref().unwrap_or(""),
             if status.running || self.matcher.active_injectors() > 0 {
                 "(running) "
             } else {

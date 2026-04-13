@@ -9,7 +9,7 @@ use tokio::time::Instant;
 
 use crate::{job, ui::overlay::Overlay};
 
-use super::{CachedPreview, DynQueryCallback, Picker};
+use super::{modal_picker::ModalPicker, CachedPreview, DynQueryCallback, Picker};
 
 pub(super) struct PreviewHighlightHandler<T: 'static + Send + Sync, D: 'static + Send + Sync> {
     trigger: Option<Arc<Path>>,
@@ -54,58 +54,43 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> AsyncHook
         };
 
         job::dispatch_blocking(move |editor, compositor| {
-            let Some(Overlay {
-                content: picker, ..
-            }) = compositor.find::<Overlay<Picker<T, D>>>()
-            else {
-                return;
-            };
-
-            let Some(CachedPreview::Document(ref mut doc)) = picker.preview_cache.get_mut(&path)
-            else {
-                return;
-            };
-
-            if doc.syntax().is_some() {
-                return;
-            }
-
-            let Some(language) = doc.language_config().map(|config| config.language()) else {
-                return;
-            };
-
-            let loader = editor.syn_loader.load();
-            let text = doc.text().clone();
-
-            tokio::task::spawn_blocking(move || {
-                let syntax = match helix_core::Syntax::new(text.slice(..), language, &loader) {
-                    Ok(syntax) => syntax,
-                    Err(err) => {
-                        log::info!("highlighting picker preview failed: {err}");
-                        return;
-                    }
+            with_picker::<T, D, _>(compositor, |picker| {
+                let Some(CachedPreview::Document(ref mut doc)) = picker.preview_cache.get_mut(&path)
+                else {
+                    return;
                 };
-
-                job::dispatch_blocking(move |editor, compositor| {
-                    let Some(Overlay {
-                        content: picker, ..
-                    }) = compositor.find::<Overlay<Picker<T, D>>>()
-                    else {
-                        log::info!("picker closed before syntax highlighting finished");
-                        return;
+                if doc.syntax().is_some() {
+                    return;
+                }
+                let Some(language) = doc.language_config().map(|config| config.language()) else {
+                    return;
+                };
+                let loader = editor.syn_loader.load();
+                let text = doc.text().clone();
+                tokio::task::spawn_blocking(move || {
+                    let syntax = match helix_core::Syntax::new(text.slice(..), language, &loader) {
+                        Ok(syntax) => syntax,
+                        Err(err) => {
+                            log::info!("highlighting picker preview failed: {err}");
+                            return;
+                        }
                     };
-                    let Some(CachedPreview::Document(ref mut doc)) =
-                        picker.preview_cache.get_mut(&path)
-                    else {
-                        return;
-                    };
-                    let diagnostics = helix_view::Editor::doc_diagnostics(
-                        &editor.language_servers,
-                        &editor.diagnostics,
-                        doc,
-                    );
-                    doc.replace_diagnostics(diagnostics, &[], None);
-                    doc.syntax = Some(syntax);
+                    job::dispatch_blocking(move |editor, compositor| {
+                        with_picker::<T, D, _>(compositor, |picker| {
+                            let Some(CachedPreview::Document(ref mut doc)) =
+                                picker.preview_cache.get_mut(&path)
+                            else {
+                                return;
+                            };
+                            let diagnostics = helix_view::Editor::doc_diagnostics(
+                                &editor.language_servers,
+                                &editor.diagnostics,
+                                doc,
+                            );
+                            doc.replace_diagnostics(diagnostics, &[], None);
+                            doc.syntax = Some(syntax);
+                        });
+                    });
                 });
             });
         });
@@ -167,24 +152,42 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> AsyncHook for DynamicQu
         let callback = self.callback.clone();
 
         job::dispatch_blocking(move |editor, compositor| {
-            let Some(Overlay {
-                content: picker, ..
-            }) = compositor.find::<Overlay<Picker<T, D>>>()
-            else {
-                return;
-            };
-            // Increment the version number to cancel any ongoing requests.
-            picker.version.fetch_add(1, atomic::Ordering::Relaxed);
-            picker.matcher.restart(false);
-            let injector = picker.injector();
-            let get_options = (callback)(&query, editor, picker.editor_data.clone(), &injector);
-            tokio::spawn(async move {
-                if let Err(err) = get_options.await {
-                    log::info!("Dynamic request failed: {err}");
-                }
-                // NOTE: the Drop implementation of Injector will request a redraw when the
-                // injector falls out of scope here, clearing the "running" indicator.
+            with_picker::<T, D, _>(compositor, |picker| {
+                // Increment the version number to cancel any ongoing requests.
+                picker.version.fetch_add(1, atomic::Ordering::Relaxed);
+                picker.matcher.restart(false);
+                let injector = picker.injector();
+                let get_options =
+                    (callback)(&query, editor, picker.editor_data.clone(), &injector);
+                tokio::spawn(async move {
+                    if let Err(err) = get_options.await {
+                        log::info!("Dynamic request failed: {err}");
+                    }
+                    // NOTE: the Drop implementation of Injector will request a redraw when the
+                    // injector falls out of scope here, clearing the "running" indicator.
+                });
             });
         })
+    }
+}
+
+/// Call `f` with the inner [`Picker`] regardless of whether the compositor
+/// holds a plain `Overlay<Picker<T,D>>` or an `Overlay<ModalPicker<T,D>>`.
+fn with_picker<T, D, F>(compositor: &mut crate::compositor::Compositor, f: F)
+where
+    T: 'static + Send + Sync,
+    D: 'static + Send + Sync,
+    F: FnOnce(&mut Picker<T, D>),
+{
+    if let Some(Overlay { content: modal, .. }) =
+        compositor.find::<Overlay<ModalPicker<T, D>>>()
+    {
+        f(modal.inner_mut());
+        return;
+    }
+    if let Some(Overlay { content: picker, .. }) =
+        compositor.find::<Overlay<Picker<T, D>>>()
+    {
+        f(picker);
     }
 }

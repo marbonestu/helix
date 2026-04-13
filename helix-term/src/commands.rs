@@ -66,7 +66,7 @@ use crate::{
     compositor::{self, Component, Compositor},
     filter_picker_entry,
     job::Callback,
-    ui::{self, overlay::overlaid, Picker, PickerColumn, Popup, Prompt, PromptEvent},
+    ui::{self, overlay::overlaid, ModalPicker, Picker, PickerColumn, Popup, Prompt, PromptEvent},
 };
 
 use crate::job::{self, Jobs};
@@ -3500,7 +3500,7 @@ fn buffer_picker(cx: &mut Context) {
         0
     };
 
-    let picker = Picker::new(columns, 2, items, (), |cx, meta, action| {
+    let picker = ModalPicker::new(columns, 2, items, (), |cx, meta, action| {
         cx.editor.switch(meta.id, action);
     })
     .with_initial_cursor(initial_cursor)
@@ -5217,7 +5217,7 @@ pub(crate) fn paste_bracketed_value(cx: &mut Context, contents: String) {
     let count = cx.count();
     let paste = match cx.editor.mode {
         Mode::Insert | Mode::Select | Mode::Visual => Paste::Cursor,
-        Mode::Normal => Paste::Before,
+        Mode::Normal | Mode::Global => Paste::Before,
     };
     let (view, doc) = current!(cx.editor);
     paste_impl(&[contents], doc, view, paste, count, cx.editor.mode);
