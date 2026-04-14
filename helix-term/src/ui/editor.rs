@@ -579,14 +579,14 @@ impl EditorView {
         let cursor_scope = match mode {
             Mode::Insert => theme.find_highlight_exact("ui.cursor.insert"),
             Mode::Select | Mode::Visual => theme.find_highlight_exact("ui.cursor.select"),
-            Mode::Normal => theme.find_highlight_exact("ui.cursor.normal"),
+            Mode::Normal | Mode::Global => theme.find_highlight_exact("ui.cursor.normal"),
         }
         .unwrap_or(base_cursor_scope);
 
         let primary_cursor_scope = match mode {
             Mode::Insert => theme.find_highlight_exact("ui.cursor.primary.insert"),
             Mode::Select | Mode::Visual => theme.find_highlight_exact("ui.cursor.primary.select"),
-            Mode::Normal => theme.find_highlight_exact("ui.cursor.primary.normal"),
+            Mode::Normal | Mode::Global => theme.find_highlight_exact("ui.cursor.primary.normal"),
         }
         .unwrap_or(base_primary_cursor_scope);
 
@@ -1799,18 +1799,16 @@ impl EditorView {
                         return EventResult::Consumed(None);
                     }
                     MouseEventKind::ScrollUp => {
+                        let n = config.scroll_lines.unsigned_abs() as usize;
                         if let Some(ref mut tree) = cxt.editor.file_tree {
-                            for _ in 0..3 {
-                                tree.move_up();
-                            }
+                            for _ in 0..n { tree.scroll_view_up(); }
                         }
                         return EventResult::Consumed(None);
                     }
                     MouseEventKind::ScrollDown => {
+                        let n = config.scroll_lines.unsigned_abs() as usize;
                         if let Some(ref mut tree) = cxt.editor.file_tree {
-                            for _ in 0..3 {
-                                tree.move_down();
-                            }
+                            for _ in 0..n { tree.scroll_view_down(); }
                         }
                         return EventResult::Consumed(None);
                     }
@@ -2055,6 +2053,52 @@ impl EditorView {
         }
     }
 
+    /// Apply a scroll/page command to the file tree, returning `true` if handled.
+    ///
+    /// Centralises the scroll dispatch used by both the modifier-key handler
+    /// (direct bindings like `C-u = "page_cursor_half_up"`) and the sequence
+    /// handler (view-submenu sequences like `zj` → `scroll_down`).
+    fn apply_tree_scroll(
+        tree: &mut Option<helix_view::file_tree::FileTree>,
+        height: usize,
+        name: &'static str,
+        count: usize,
+    ) -> bool {
+        let half = (height / 2).max(1);
+        let full = height.max(1);
+        match name {
+            "scroll_up" => {
+                if let Some(t) = tree {
+                    for _ in 0..count { t.scroll_view_up(); }
+                }
+                true
+            }
+            "scroll_down" => {
+                if let Some(t) = tree {
+                    for _ in 0..count { t.scroll_view_down(); }
+                }
+                true
+            }
+            "page_cursor_half_up" => {
+                if let Some(t) = tree { t.page_up((half * count).max(1)); }
+                true
+            }
+            "page_cursor_half_down" => {
+                if let Some(t) = tree { t.page_down((half * count).max(1)); }
+                true
+            }
+            "page_up" => {
+                if let Some(t) = tree { t.page_up((full * count).max(1)); }
+                true
+            }
+            "page_down" => {
+                if let Some(t) = tree { t.page_down((full * count).max(1)); }
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn handle_file_tree_key(
         &mut self,
         key: KeyEvent,
@@ -2230,48 +2274,7 @@ impl EditorView {
                     KeyTrie::MappableCommand(MappableCommand::Static { name, .. }) => {
                         let height = cx.editor.tree.area().height as usize;
                         let count = self.file_tree_count.take().map_or(1, |n| n.get());
-                        let half = (height / 2).max(1);
-                        let full = height.max(1);
-                        let handled = match name {
-                            "page_cursor_half_up" => {
-                                if let Some(ref mut tree) = cx.editor.file_tree {
-                                    tree.page_up((half * count).max(1));
-                                }
-                                true
-                            }
-                            "page_cursor_half_down" => {
-                                if let Some(ref mut tree) = cx.editor.file_tree {
-                                    tree.page_down((half * count).max(1));
-                                }
-                                true
-                            }
-                            "page_up" => {
-                                if let Some(ref mut tree) = cx.editor.file_tree {
-                                    tree.page_up((full * count).max(1));
-                                }
-                                true
-                            }
-                            "page_down" => {
-                                if let Some(ref mut tree) = cx.editor.file_tree {
-                                    tree.page_down((full * count).max(1));
-                                }
-                                true
-                            }
-                            "scroll_up" => {
-                                if let Some(ref mut tree) = cx.editor.file_tree {
-                                    for _ in 0..count { tree.scroll_view_up(); }
-                                }
-                                true
-                            }
-                            "scroll_down" => {
-                                if let Some(ref mut tree) = cx.editor.file_tree {
-                                    for _ in 0..count { tree.scroll_view_down(); }
-                                }
-                                true
-                            }
-                            _ => false,
-                        };
-                        if handled {
+                        if Self::apply_tree_scroll(&mut cx.editor.file_tree, height, name, count) {
                             return EventResult::Consumed(None);
                         }
                     }
@@ -2288,19 +2291,25 @@ impl EditorView {
                         }));
                         return EventResult::Consumed(None);
                     }
+                    KeyTrie::MappableCommand(cmd @ MappableCommand::Typable { .. }) => {
+                        self.file_tree_count = None;
+                        cmd.execute(cx);
+                        return EventResult::Consumed(None);
+                    }
                     _ => {}
                 }
             }
         }
 
         // Multi-key sequence handler.
-        // `space` enters "command sequence" mode; subsequent keys are looked up
-        // in the normal-mode keymap trie so any command the user has bound under
-        // `space` (e.g. `space g o f`) works in the file tree without hardcoding.
-        let is_space = key.modifiers.is_empty() && key.code == KeyCode::Char(' ');
-        let in_seq   = !self.file_tree_seq.is_empty();
+        // `space` and `z` enter sequence mode; subsequent keys are looked up in
+        // the normal-mode keymap trie. This makes commands like `space g o f`
+        // and view-scroll sequences like `zj` / `zk` work in the file tree.
+        let is_seq_start = key.modifiers.is_empty()
+            && matches!(key.code, KeyCode::Char(' ') | KeyCode::Char('z'));
+        let in_seq = !self.file_tree_seq.is_empty();
 
-        if is_space || in_seq {
+        if is_seq_start || in_seq {
             self.file_tree_g_pending = false;
             if key.code == KeyCode::Esc {
                 self.file_tree_seq.clear();
@@ -2325,11 +2334,16 @@ impl EditorView {
                     // Partial match — wait for more keys.
                     Some(KeyTrie::Node(_)) => return EventResult::Consumed(None),
 
-                    // Full match: static command — execute in file tree context.
+                    // Full match: static command — try scroll dispatch first (uses
+                    // the accumulated count), then fall back to general file-tree
+                    // command handling.
                     Some(KeyTrie::MappableCommand(MappableCommand::Static { name, .. })) => {
+                        let count = self.file_tree_count.take().map_or(1, |n| n.get());
+                        let height = cx.editor.tree.area().height as usize;
                         self.file_tree_seq.clear();
-                        self.file_tree_count = None;
-                        self.handle_file_tree_command(name, cx);
+                        if !Self::apply_tree_scroll(&mut cx.editor.file_tree, height, name, count) {
+                            self.handle_file_tree_command(name, cx);
+                        }
                         return EventResult::Consumed(None);
                     }
 
@@ -2342,6 +2356,14 @@ impl EditorView {
                                 compositor.handle_event(&Event::Key(k), cx);
                             }
                         }));
+                        return EventResult::Consumed(None);
+                    }
+
+                    // Full match: typable command — execute directly.
+                    Some(KeyTrie::MappableCommand(cmd @ MappableCommand::Typable { .. })) => {
+                        self.file_tree_seq.clear();
+                        self.file_tree_count = None;
+                        cmd.execute(cx);
                         return EventResult::Consumed(None);
                     }
 
@@ -2837,11 +2859,6 @@ impl EditorView {
                 );
                 EventResult::Consumed(None)
             }
-            KeyCode::Char('z') if key.modifiers.is_empty() => {
-                // `z` is a no-op separator used in macro sequences like `@9zj`.
-                // Preserving the accumulated count lets the next j/k consume it.
-                EventResult::Consumed(None)
-            }
             _ => {
                 self.file_tree_count = None;
                 self.file_tree_g_pending = false;
@@ -2880,6 +2897,43 @@ impl EditorView {
             }
             // Add more file-tree-adapted commands here as needed.
             _ => {}
+        }
+    }
+
+    /// Handle a key event against the `[keys.global]` keymap.
+    ///
+    /// Only direct single-key bindings are supported (modifier keys, function
+    /// keys, etc.). Multi-key sequences like `space Q` are intentionally excluded
+    /// to avoid prefix conflicts with the normal-mode keymap; those work from any
+    /// panel via the space-sequence handler which already consults `[keys.normal]`.
+    ///
+    /// Returns `EventResult::Consumed` if the key matched a global binding,
+    /// `EventResult::Ignored` otherwise. Must be called before any panel-specific
+    /// handler so that global bindings fire in both the editor and panel contexts.
+    fn handle_global_key(&mut self, key: KeyEvent, cx: &mut commands::Context) -> EventResult {
+        use crate::keymap::KeyTrie;
+        use helix_view::document::Mode;
+
+        let trie_entry = {
+            let map = self.keymaps.map();
+            map.get(&Mode::Global)
+                .and_then(|trie| trie.search(&[key]))
+                .cloned()
+        };
+
+        match trie_entry {
+            Some(KeyTrie::MappableCommand(cmd)) => {
+                cmd.execute(cx);
+                EventResult::Consumed(None)
+            }
+            Some(KeyTrie::Sequence(cmds)) => {
+                for cmd in &cmds {
+                    cmd.execute(cx);
+                }
+                EventResult::Consumed(None)
+            }
+            // Nodes (prefix of a multi-key sequence) and no-match both fall through.
+            _ => EventResult::Ignored(None),
         }
     }
 
@@ -3062,6 +3116,27 @@ impl Component for EditorView {
 
                 // clear status
                 cx.editor.status_msg = None;
+
+                // Check global keybindings before any panel-specific handling.
+                {
+                    let global_result = self.handle_global_key(key, &mut cx);
+                    if let EventResult::Consumed(_) = &global_result {
+                        cx.editor.count = None;
+                        let callbacks = take(&mut cx.callback);
+                        let callback = if callbacks.is_empty() {
+                            None
+                        } else {
+                            let callback: crate::compositor::Callback =
+                                Box::new(move |compositor, cx| {
+                                    for callback in callbacks {
+                                        callback(compositor, cx)
+                                    }
+                                });
+                            Some(callback)
+                        };
+                        return EventResult::Consumed(callback);
+                    }
+                }
 
                 // Intercept keys when file tree is focused
                 if cx.editor.left_sidebar.focused {

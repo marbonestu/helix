@@ -170,7 +170,7 @@ where
     let mode_str = match context.editor.mode() {
         Mode::Insert => &modenames.insert,
         Mode::Select => &modenames.select,
-        Mode::Normal => &modenames.normal,
+        Mode::Normal | Mode::Global => &modenames.normal,
         Mode::Visual => {
             use helix_view::editor::VisualKind;
             match context.editor.visual_kind {
@@ -190,7 +190,7 @@ where
         match context.editor.mode() {
             Mode::Insert => context.editor.theme.get("ui.statusline.insert"),
             Mode::Select | Mode::Visual => context.editor.theme.get("ui.statusline.select"),
-            Mode::Normal => context.editor.theme.get("ui.statusline.normal"),
+            Mode::Normal | Mode::Global => context.editor.theme.get("ui.statusline.normal"),
         }
     } else {
         Style::default()

@@ -68,6 +68,9 @@ pub enum Mode {
     Insert = 2,
     /// Vim visual mode (only used when grammar = vim)
     Visual = 3,
+    /// Not an editor mode — used only as a keymap namespace for
+    /// bindings that fire regardless of which panel is focused.
+    Global = 4,
 }
 
 impl Display for Mode {
@@ -77,6 +80,7 @@ impl Display for Mode {
             Mode::Select => f.write_str("select"),
             Mode::Insert => f.write_str("insert"),
             Mode::Visual => f.write_str("visual"),
+            Mode::Global => f.write_str("global"),
         }
     }
 }
@@ -90,6 +94,7 @@ impl FromStr for Mode {
             "select" => Ok(Mode::Select),
             "insert" => Ok(Mode::Insert),
             "visual" => Ok(Mode::Visual),
+            "global" => Ok(Mode::Global),
             _ => bail!("Invalid mode '{}'", s),
         }
     }
