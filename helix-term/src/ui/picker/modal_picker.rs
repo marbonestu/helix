@@ -233,20 +233,10 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Component for ModalPick
                         return self.inner.handle_event(event, ctx);
                     }
 
-                    // --- Registered caller actions and unbound printable fallback ---
+                    // --- Registered caller actions ---
                     key_event => {
                         if let Some(result) = self.dispatch_action(key_event, ctx) {
                             return result;
-                        }
-                        // An unbound printable key enters Insert mode and appends the
-                        // character to the query, preserving the character's intent.
-                        if let helix_view::keyboard::KeyCode::Char(_) = key_event.code {
-                            if key_event.modifiers == helix_view::keyboard::KeyModifiers::NONE {
-                                self.mode = PickerMode::Insert;
-                                self.pending_key = None;
-                                self.inner.set_status_prefix(None);
-                                return self.inner.prompt_handle_event(event, ctx);
-                            }
                         }
                     }
                 }
