@@ -1718,7 +1718,6 @@ impl EditorView {
             self.handle_non_key_input(cxt)
         }
 
-        let config = cxt.editor.config();
         let MouseEvent {
             kind,
             row,
@@ -1726,6 +1725,83 @@ impl EditorView {
             modifiers,
             ..
         } = *event;
+
+        // ── Drag-resize handling ────────────────────────────────────────────
+        // When a drag-resize is active, all Drag and Up events are consumed
+        // here so they don't fall through to text selection or other handlers.
+        if self.drag_resize.is_some() {
+            match kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    match self.drag_resize.as_mut().unwrap() {
+                        DragResize::Sidebar { start_col, start_width } => {
+                            let delta = column as i32 - *start_col as i32;
+                            let new_width = (*start_width as i32 + delta)
+                                .max(helix_view::sidebar::MIN_SIDEBAR_WIDTH as i32)
+                                as u16;
+                            cxt.editor.left_sidebar.width = new_width;
+                        }
+                        DragResize::Split { hit, last_pos } => {
+                            let (current, prev) = match hit.layout {
+                                helix_view::tree::Layout::Vertical => (column, *last_pos),
+                                helix_view::tree::Layout::Horizontal => (row, *last_pos),
+                            };
+                            if current != prev {
+                                let delta = current as f64 - prev as f64;
+                                // Scale pixel delta to weight delta: use a fixed
+                                // ratio so dragging feels consistent regardless of
+                                // container size.
+                                let weight_delta = delta * 0.01;
+                                let container_id = hit.container_id;
+                                let child_index = hit.child_index;
+                                cxt.editor
+                                    .tree
+                                    .adjust_weights_at(container_id, child_index, weight_delta);
+                                // Update last_pos for next drag event.
+                                if let Some(DragResize::Split { last_pos, .. }) =
+                                    self.drag_resize.as_mut()
+                                {
+                                    *last_pos = current;
+                                }
+                            }
+                        }
+                    }
+                    return EventResult::Consumed(None);
+                }
+                MouseEventKind::Up(MouseButton::Left) => {
+                    self.drag_resize = None;
+                    return EventResult::Consumed(None);
+                }
+                _ => {}
+            }
+        }
+
+        let config = cxt.editor.config();
+
+        // ── Border drag initiation on MouseDown ─────────────────────────────
+        if matches!(kind, MouseEventKind::Down(MouseButton::Left)) {
+            // Sidebar border: the separator column is at rendered_width - 1.
+            // Accept a 1-column hit zone on either side of the separator.
+            if cxt.editor.left_sidebar.visible && cxt.editor.left_sidebar.rendered_width > 0 {
+                let sep = cxt.editor.left_sidebar.rendered_width.saturating_sub(1);
+                if column >= sep && column <= sep + 1 {
+                    self.drag_resize = Some(DragResize::Sidebar {
+                        start_col: column,
+                        start_width: cxt.editor.left_sidebar.width,
+                    });
+                    return EventResult::Consumed(None);
+                }
+            }
+
+            // Split border: check if the click landed on a split separator.
+            if let Some(hit) = cxt.editor.tree.border_at_screen_coords(row, column) {
+                let last_pos = match hit.layout {
+                    helix_view::tree::Layout::Vertical => column,
+                    helix_view::tree::Layout::Horizontal => row,
+                };
+                self.drag_resize = Some(DragResize::Split { hit, last_pos });
+                return EventResult::Consumed(None);
+            }
+        }
 
         // Check if click is in the file tree sidebar area
         if cxt.editor.left_sidebar.rendered_width > 0 && cxt.editor.left_sidebar.visible {
