@@ -41,14 +41,22 @@ impl SplitPicker {
     /// Returns `None` when there are no splits to label (should not happen in
     /// practice, but guards against an empty tree).
     pub fn new(path: PathBuf, editor: &helix_view::Editor) -> Option<Self> {
-        let views: Vec<LabeledView> = editor
+        let mut sorted_views: Vec<_> = editor
             .tree
             .views()
+            .map(|(view, _focused)| (view.id, view.area))
+            .collect();
+
+        // Sort by visual position: top-to-bottom, then left-to-right.
+        sorted_views.sort_by_key(|&(_, area)| (area.y, area.x));
+
+        let views: Vec<LabeledView> = sorted_views
+            .into_iter()
             .zip(LABELS.iter().copied())
-            .map(|((view, _focused), label)| LabeledView {
+            .map(|((view_id, area), label)| LabeledView {
                 label,
-                view_id: view.id,
-                area: view.area,
+                view_id,
+                area,
             })
             .collect();
 
@@ -104,7 +112,9 @@ impl Component for SplitPicker {
         };
 
         if key.code == KeyCode::Esc {
-            return EventResult::Consumed(None);
+            return EventResult::Consumed(Some(Box::new(|compositor, _cx| {
+                compositor.pop();
+            })));
         }
 
         if key.modifiers != KeyModifiers::NONE && key.modifiers != KeyModifiers::SHIFT {
@@ -129,5 +139,89 @@ impl Component for SplitPicker {
 
         // Consume unrecognised keys so they don't leak into the editor.
         EventResult::Consumed(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use helix_view::{editor::GutterConfig, graphics::Rect, tree::Layout, view::View, DocumentId};
+
+    /// Helper: given a tree, produce labels sorted by visual position (same
+    /// logic as `SplitPicker::new` but without needing a full `Editor`).
+    fn labels_from_tree(tree: &helix_view::tree::Tree) -> Vec<(char, ViewId)> {
+        let mut views: Vec<_> = tree
+            .views()
+            .map(|(view, _)| (view.id, view.area))
+            .collect();
+        views.sort_by_key(|&(_, area)| (area.y, area.x));
+        views
+            .into_iter()
+            .zip(LABELS.iter().copied())
+            .map(|((id, _), label)| (label, id))
+            .collect()
+    }
+
+    #[test]
+    fn labels_follow_visual_order() {
+        // Build a tree with 3 vertical splits: the creation order will be
+        // [first, third, second] because we focus back on `first` before
+        // creating `second`. The visual layout after recalculate is:
+        //
+        //  | first (a) | second (b) | third (c) |
+        //
+        // Without sorting, labels would follow creation order and `third`
+        // would get 'b' while `second` gets 'c'.
+        let area = Rect::new(0, 0, 180, 80);
+        let mut tree = helix_view::tree::Tree::new(area);
+
+        let view = View::new(DocumentId::default(), GutterConfig::default());
+        tree.insert(view);
+        let first = tree.focus;
+
+        // Split right → creates "third" (rightmost after next split).
+        let view = View::new(DocumentId::default(), GutterConfig::default());
+        tree.split(view, Layout::Vertical);
+        let right = tree.focus;
+
+        // Go back to the first view and split again → inserts between first
+        // and right, making it the visual "second".
+        tree.focus = first;
+        let view = View::new(DocumentId::default(), GutterConfig::default());
+        tree.split(view, Layout::Vertical);
+        let middle = tree.focus;
+
+        tree.recalculate();
+
+        let labels = labels_from_tree(&tree);
+        assert_eq!(labels.len(), 3);
+
+        // Verify labels are assigned by visual x-position, not creation order.
+        assert_eq!(labels[0], ('a', first));
+        assert_eq!(labels[1], ('b', middle));
+        assert_eq!(labels[2], ('c', right));
+    }
+
+    #[test]
+    fn labels_follow_visual_order_horizontal_splits() {
+        // Two rows: top and bottom. Create bottom first, then top shouldn't
+        // matter — labels should be 'a' for the top view, 'b' for the bottom.
+        let area = Rect::new(0, 0, 180, 80);
+        let mut tree = helix_view::tree::Tree::new(area);
+
+        let view = View::new(DocumentId::default(), GutterConfig::default());
+        tree.insert(view);
+        let top = tree.focus;
+
+        let view = View::new(DocumentId::default(), GutterConfig::default());
+        tree.split(view, Layout::Horizontal);
+        let bottom = tree.focus;
+
+        tree.recalculate();
+
+        let labels = labels_from_tree(&tree);
+        assert_eq!(labels.len(), 2);
+        assert_eq!(labels[0], ('a', top));
+        assert_eq!(labels[1], ('b', bottom));
     }
 }
