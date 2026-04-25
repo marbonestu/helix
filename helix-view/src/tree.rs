@@ -72,6 +72,17 @@ pub enum Direction {
     Right,
 }
 
+/// Describes which split border was hit by a screen coordinate.
+#[derive(Debug, Clone, Copy)]
+pub struct SplitBorderHit {
+    /// The container whose children share this border.
+    pub container_id: ViewId,
+    /// Index of the child to the left (vertical) or above (horizontal) the border.
+    pub child_index: usize,
+    /// Layout axis of the container.
+    pub layout: Layout,
+}
+
 #[derive(Debug)]
 pub struct Container {
     layout: Layout,
@@ -342,6 +353,135 @@ impl Tree {
         for child in children {
             self.equalize_recursive(child);
         }
+    }
+
+    /// Find the split border at the given screen coordinates.
+    ///
+    /// For vertical containers (side-by-side splits), the 1-column gap after
+    /// each child (except the last) is the border. For horizontal containers
+    /// (stacked splits), the last row of each child (except the last) is the
+    /// border. Returns the most deeply nested match.
+    pub fn border_at_screen_coords(&self, row: u16, col: u16) -> Option<SplitBorderHit> {
+        let mut best: Option<(SplitBorderHit, u32)> = None; // (hit, area_size)
+
+        for (id, node) in &self.nodes {
+            let container = match &node.content {
+                Content::Container(c) => c,
+                _ => continue,
+            };
+            if container.children.len() < 2 {
+                continue;
+            }
+
+            // Compute child areas the same way recalculate() does.
+            match container.layout {
+                Layout::Vertical => {
+                    let total_weight: f64 = container.weights.iter().sum();
+                    let inner_gap = 1u16;
+                    let total_gap = inner_gap * (container.children.len() as u16).saturating_sub(1);
+                    let used_area = container.area.width.saturating_sub(total_gap) as f64;
+                    let mut child_x = container.area.x;
+
+                    for (i, &weight) in container.weights.iter().enumerate() {
+                        if i == container.children.len() - 1 {
+                            break; // last child has no border after it
+                        }
+                        let width = ((weight / total_weight) * used_area).round() as u16;
+                        let width = width.max(MIN_SPLIT_WIDTH);
+                        let border_col = child_x + width;
+                        child_x = border_col + inner_gap;
+
+                        if col == border_col
+                            && row >= container.area.y
+                            && row < container.area.y + container.area.height
+                        {
+                            let area_size =
+                                container.area.width as u32 * container.area.height as u32;
+                            if best.as_ref().map_or(true, |&(_, s)| area_size < s) {
+                                best = Some((
+                                    SplitBorderHit {
+                                        container_id: id,
+                                        child_index: i,
+                                        layout: Layout::Vertical,
+                                    },
+                                    area_size,
+                                ));
+                            }
+                        }
+                    }
+                }
+                Layout::Horizontal => {
+                    let total_weight: f64 = container.weights.iter().sum();
+                    let available_height = container.area.height as f64;
+                    let mut child_y = container.area.y;
+
+                    for (i, &weight) in container.weights.iter().enumerate() {
+                        if i == container.children.len() - 1 {
+                            break;
+                        }
+                        let height = ((weight / total_weight) * available_height).round() as u16;
+                        let height = height.max(MIN_SPLIT_HEIGHT);
+                        let border_row = child_y + height - 1; // statusline row
+                        child_y += height;
+
+                        if row == border_row
+                            && col >= container.area.x
+                            && col < container.area.x + container.area.width
+                        {
+                            let area_size =
+                                container.area.width as u32 * container.area.height as u32;
+                            if best.as_ref().map_or(true, |&(_, s)| area_size < s) {
+                                best = Some((
+                                    SplitBorderHit {
+                                        container_id: id,
+                                        child_index: i,
+                                        layout: Layout::Horizontal,
+                                    },
+                                    area_size,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        best.map(|(hit, _)| hit)
+    }
+
+    /// Adjust the weights of two adjacent children in a container.
+    ///
+    /// A positive `delta` grows the child at `child_index` and shrinks the next
+    /// sibling; a negative `delta` does the reverse. Weights are clamped to a
+    /// minimum of 0.1 to prevent collapse.
+    pub fn adjust_weights_at(
+        &mut self,
+        container_id: ViewId,
+        child_index: usize,
+        delta: f64,
+    ) {
+        let container = self.container_mut(container_id);
+        let next = child_index + 1;
+        if next >= container.weights.len() {
+            return;
+        }
+
+        let max_take_from_next = container.weights[next] - 0.1;
+        let max_take_from_curr = container.weights[child_index] - 0.1;
+
+        let clamped = if delta > 0.0 {
+            delta.min(max_take_from_next)
+        } else {
+            -(-delta).min(max_take_from_curr)
+        };
+
+        if clamped.abs() < f64::EPSILON {
+            return;
+        }
+
+        container.weights[child_index] += clamped;
+        container.weights[next] -= clamped;
+        self.recalculate();
     }
 
     /// Toggle zoom on the focused split. If already zoomed, unzoom; otherwise zoom.
