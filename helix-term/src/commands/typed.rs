@@ -2826,6 +2826,194 @@ fn yank_diagnostic(
     Ok(())
 }
 
+fn yank_buffer_path(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let reg = match args.first() {
+        Some(s) => {
+            ensure!(s.chars().count() == 1, format!("Invalid register {s}"));
+            s.chars().next().unwrap()
+        }
+        None => '+',
+    };
+
+    let doc = doc!(cx.editor);
+    let path = doc
+        .relative_path()
+        .ok_or_else(|| anyhow::anyhow!("Buffer has no file path"))?
+        .to_string_lossy()
+        .into_owned();
+
+    cx.editor.registers.write(reg, vec![path.clone()])?;
+    cx.editor.set_status(format!("Yanked path: {path}"));
+    Ok(())
+}
+
+const YANK_REF_CONTENT_FLAG: Flag = Flag {
+    name: "content",
+    doc: "include selected text content",
+    ..Flag::DEFAULT
+};
+
+fn yank_buffer_reference(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let reg = match args.first() {
+        Some(s) => {
+            ensure!(s.chars().count() == 1, format!("Invalid register {s}"));
+            s.chars().next().unwrap()
+        }
+        None => '+',
+    };
+
+    let include_content = args.has_flag("content");
+
+    let (view, doc) = current_ref!(cx.editor);
+    let path = doc
+        .relative_path()
+        .ok_or_else(|| anyhow::anyhow!("Buffer has no file path"))?
+        .to_string_lossy()
+        .into_owned();
+
+    let text = doc.text().slice(..);
+    let selection = doc.selection(view.id);
+
+    let mut references = Vec::new();
+
+    for range in selection.ranges() {
+        let start_line = text.char_to_line(range.from()) + 1;
+        let end_line = text.char_to_line(range.to()) + 1;
+
+        let line_ref = if start_line == end_line {
+            format!("{path}:{start_line}")
+        } else {
+            format!("{path}:{start_line}-{end_line}")
+        };
+
+        if include_content {
+            let fragment = range.fragment(text);
+            references.push(format!("{line_ref}\n{fragment}"));
+        } else {
+            references.push(line_ref);
+        }
+    }
+
+    let result = references.join("\n");
+    let n = selection.ranges().len();
+    cx.editor.registers.write(reg, vec![result])?;
+    cx.editor.set_status(format!(
+        "Yanked {n} reference{}",
+        if n == 1 { "" } else { "s" }
+    ));
+    Ok(())
+}
+
+fn resize_grow_width(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let count: u16 = args.first().map(|s| s.parse()).transpose()?.unwrap_or(1);
+    if cx.editor.left_sidebar.focused {
+        cx.editor.left_sidebar.grow(count);
+    } else {
+        cx.editor
+            .tree
+            .resize_view(tree::Direction::Right, count as f64 * 0.2);
+    }
+    Ok(())
+}
+
+fn resize_shrink_width(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let count: u16 = args.first().map(|s| s.parse()).transpose()?.unwrap_or(1);
+    if cx.editor.left_sidebar.focused {
+        cx.editor.left_sidebar.shrink(count);
+    } else {
+        cx.editor
+            .tree
+            .resize_view(tree::Direction::Left, count as f64 * 0.2);
+    }
+    Ok(())
+}
+
+fn resize_grow_height(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let count: u16 = args.first().map(|s| s.parse()).transpose()?.unwrap_or(1);
+    cx.editor
+        .tree
+        .resize_view(tree::Direction::Down, count as f64 * 0.2);
+    Ok(())
+}
+
+fn resize_shrink_height(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let count: u16 = args.first().map(|s| s.parse()).transpose()?.unwrap_or(1);
+    cx.editor
+        .tree
+        .resize_view(tree::Direction::Up, count as f64 * 0.2);
+    Ok(())
+}
+
+fn resize_grow_sidebar(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let count: u16 = args.first().map(|s| s.parse()).transpose()?.unwrap_or(1);
+    cx.editor.left_sidebar.grow(count);
+    Ok(())
+}
+
+fn resize_shrink_sidebar(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let count: u16 = args.first().map(|s| s.parse()).transpose()?.unwrap_or(1);
+    cx.editor.left_sidebar.shrink(count);
+    Ok(())
+}
+
 fn read(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -3874,6 +4062,72 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         },
     },
     TypableCommand {
+        name: "grow-width",
+        aliases: &["gw"],
+        doc: "Grow the width of the focused split or sidebar. Optional count argument (default 1).",
+        fun: resize_grow_width,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "shrink-width",
+        aliases: &["sw"],
+        doc: "Shrink the width of the focused split or sidebar. Optional count argument (default 1).",
+        fun: resize_shrink_width,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "grow-height",
+        aliases: &["gh"],
+        doc: "Grow the height of the focused split. Optional count argument (default 1).",
+        fun: resize_grow_height,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "shrink-height",
+        aliases: &["sh"],
+        doc: "Shrink the height of the focused split. Optional count argument (default 1).",
+        fun: resize_shrink_height,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "grow-sidebar",
+        aliases: &["gsb"],
+        doc: "Grow the sidebar width. Optional count argument (default 1).",
+        fun: resize_grow_sidebar,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "shrink-sidebar",
+        aliases: &["ssb"],
+        doc: "Shrink the sidebar width. Optional count argument (default 1).",
+        fun: resize_shrink_sidebar,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
         name: "tutor",
         aliases: &[],
         doc: "Open the tutorial.",
@@ -4148,6 +4402,29 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::all(completers::register),
         signature: Signature {
             positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "yank-buffer-path",
+        aliases: &["ybp"],
+        doc: "Yank the buffer's file path to register, or clipboard by default",
+        fun: yank_buffer_path,
+        completer: CommandCompleter::all(completers::register),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "yank-buffer-reference",
+        aliases: &["ybr"],
+        doc: "Yank file path with line numbers for each selection to register, or clipboard by default. Use --content to include selected text.",
+        fun: yank_buffer_reference,
+        completer: CommandCompleter::all(completers::register),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            flags: &[YANK_REF_CONTENT_FLAG],
             ..Signature::DEFAULT
         },
     },
