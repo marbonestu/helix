@@ -71,6 +71,8 @@ pub enum Mode {
     /// Not an editor mode — used only as a keymap namespace for
     /// bindings that fire regardless of which panel is focused.
     Global = 4,
+    /// Not an editor mode — used only as a keymap namespace for file-tree bindings.
+    FileTree = 5,
 }
 
 impl Display for Mode {
@@ -81,6 +83,7 @@ impl Display for Mode {
             Mode::Insert => f.write_str("insert"),
             Mode::Visual => f.write_str("visual"),
             Mode::Global => f.write_str("global"),
+            Mode::FileTree => f.write_str("file_tree"),
         }
     }
 }
@@ -95,6 +98,7 @@ impl FromStr for Mode {
             "insert" => Ok(Mode::Insert),
             "visual" => Ok(Mode::Visual),
             "global" => Ok(Mode::Global),
+            "file_tree" => Ok(Mode::FileTree),
             _ => bail!("Invalid mode '{}'", s),
         }
     }

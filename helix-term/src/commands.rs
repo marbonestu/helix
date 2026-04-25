@@ -5217,7 +5217,7 @@ pub(crate) fn paste_bracketed_value(cx: &mut Context, contents: String) {
     let count = cx.count();
     let paste = match cx.editor.mode {
         Mode::Insert | Mode::Select | Mode::Visual => Paste::Cursor,
-        Mode::Normal | Mode::Global => Paste::Before,
+        Mode::Normal | Mode::Global | Mode::FileTree => Paste::Before,
     };
     let (view, doc) = current!(cx.editor);
     paste_impl(&[contents], doc, view, paste, count, cx.editor.mode);
