@@ -82,6 +82,18 @@ pub enum VisualKind {
     Block,
 }
 
+/// State for block (column/rectangular) selection mode.
+/// Tracks both corners of the rectangle in logical (line, column) coordinates
+/// so the block shape is independent of individual line lengths.
+#[derive(Debug, Copy, Clone)]
+pub struct BlockSelectState {
+    pub anchor_line: usize,
+    pub anchor_col: usize,
+    /// Intended column for the head corner. Not clamped to line length,
+    /// so vertical movement across short lines preserves the column.
+    pub head_col: usize,
+}
+
 fn deserialize_duration_millis<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -1377,6 +1389,7 @@ pub struct Editor {
     pub cursor_cache: CursorCache,
     /// Active visual sub-type when in vim Visual mode
     pub visual_kind: Option<VisualKind>,
+    pub block_select: Option<BlockSelectState>,
 }
 
 pub type Motion = Box<dyn Fn(&mut Editor)>;
@@ -1503,6 +1516,7 @@ impl Editor {
             file_tree: None,
             left_sidebar: Sidebar::new(conf.file_tree.width),
             visual_kind: None,
+            block_select: None,
         }
     }
 
@@ -2562,6 +2576,7 @@ impl Editor {
 
         let was_visual = self.mode == Mode::Visual;
         self.visual_kind = None;
+        self.block_select = None;
         self.mode = Mode::Normal;
         let (view, doc) = current!(self);
 

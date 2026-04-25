@@ -169,7 +169,13 @@ where
     let modenames = &config.statusline.mode;
     let mode_str = match context.editor.mode() {
         Mode::Insert => &modenames.insert,
-        Mode::Select => &modenames.select,
+        Mode::Select => {
+            if context.editor.block_select.is_some() {
+                "BLOCK"
+            } else {
+                &modenames.select
+            }
+        }
         Mode::Normal | Mode::Global | Mode::FileTree => &modenames.normal,
         Mode::Visual => {
             use helix_view::editor::VisualKind;

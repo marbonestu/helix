@@ -20,7 +20,8 @@ use helix_core::{
     syntax::{self, OverlayHighlights},
     text_annotations::TextAnnotations,
     unicode::width::UnicodeWidthStr,
-    visual_offset_from_block, Change, Position, Range, Selection, Transaction,
+    line_ending::line_end_char_index, pos_at_coords, visual_offset_from_block,
+    Change, Position, Range, Selection, Transaction,
 };
 use helix_view::{
     annotations::diagnostics::DiagnosticFilter,
@@ -200,6 +201,7 @@ impl EditorView {
                 theme,
                 &config.cursor_shape,
                 self.terminal_focused,
+                editor.block_select,
             ));
             if let Some(overlay) = Self::highlight_focused_view_elements(view, doc, theme) {
                 overlays.push(overlay);
@@ -569,6 +571,7 @@ impl EditorView {
         theme: &Theme,
         cursor_shape_config: &CursorShapeConfig,
         is_terminal_focused: bool,
+        block_select: Option<helix_view::editor::BlockSelectState>,
     ) -> OverlayHighlights {
         let text = doc.text().slice(..);
         let selection = doc.selection(view.id);
@@ -604,6 +607,67 @@ impl EditorView {
             Mode::Normal | Mode::Global | Mode::FileTree => theme.find_highlight_exact("ui.cursor.primary.normal"),
         }
         .unwrap_or(base_primary_cursor_scope);
+
+        // Block select: render a uniform rectangle from anchor corner to cursor corner
+        if let Some(bs) = block_select {
+            let mut spans = Vec::new();
+            let primary = selection.primary();
+            let cursor_pos = primary.cursor(text);
+            let head_line = text.char_to_line(cursor_pos);
+            let anchor_line = bs.anchor_line;
+            let anchor_col = bs.anchor_col;
+            let head_col = bs.head_col;
+
+            let line_start = anchor_line.min(head_line);
+            let line_end = anchor_line.max(head_line);
+            let col_start = anchor_col.min(head_col);
+            let col_end = anchor_col.max(head_col);
+
+            for line in line_start..=line_end {
+                if line >= text.len_lines() {
+                    break;
+                }
+                let start = pos_at_coords(text, Position::new(line, col_start), false);
+                let end = pos_at_coords(text, Position::new(line, col_end + 1), false);
+                let line_end_pos = line_end_char_index(&text, line);
+                let start = start.min(line_end_pos);
+                let end = end.min(line_end_pos);
+
+                if start >= end {
+                    continue;
+                }
+
+                if line == head_line {
+                    // Cursor line: highlight selection and overlay cursor
+                    let cursor_char = if head_col >= anchor_col {
+                        prev_grapheme_boundary(text, end)
+                    } else {
+                        start
+                    };
+                    let cursor_end_pos = next_grapheme_boundary(text, cursor_char);
+
+                    if cursor_is_block && is_terminal_focused {
+                        // Block cursor: split selection around cursor
+                        if head_col >= anchor_col {
+                            if start < cursor_char {
+                                spans.push((primary_selection_scope, start..cursor_char));
+                            }
+                        } else if cursor_end_pos < end {
+                            spans.push((primary_selection_scope, cursor_end_pos..end));
+                        }
+                        spans.push((primary_cursor_scope, cursor_char..cursor_end_pos));
+                    } else {
+                        // Non-block cursor (bar/underline): show full selection,
+                        // terminal draws the cursor shape itself
+                        spans.push((primary_selection_scope, start..end));
+                    }
+                } else {
+                    spans.push((selection_scope, start..end));
+                }
+            }
+
+            return OverlayHighlights::Heterogenous { highlights: spans };
+        }
 
         let mut spans = Vec::new();
         for (i, range) in selection.iter().enumerate() {
@@ -976,7 +1040,36 @@ impl EditorView {
         cxt.editor.autoinfo = self.keymaps.sticky_infobox().cloned();
 
         let mut execute_command = |command: &commands::MappableCommand| {
+            // Snapshot cursor position before the command for block select tracking
+            let block_pre_line = if cxt.editor.block_select.is_some() {
+                let (view, doc) = current!(cxt.editor);
+                let text = doc.text().slice(..);
+                let cursor = doc.selection(view.id).primary().cursor(text);
+                Some(text.char_to_line(cursor))
+            } else {
+                None
+            };
+
             command.execute(cxt);
+
+            // After any command in block select, update head_col from cursor position.
+            // Vertical movement (line changed): keep head_col stable.
+            // Horizontal/other movement (same line): update head_col to new cursor col.
+            if let Some(bs) = cxt.editor.block_select {
+                let (view, doc) = current!(cxt.editor);
+                let text = doc.text().slice(..);
+                let cursor = doc.selection(view.id).primary().cursor(text);
+                let coords = helix_core::coords_at_pos(text, cursor);
+                if Some(coords.row) == block_pre_line {
+                    // Same line: horizontal or in-line movement, update head_col
+                    cxt.editor.block_select = Some(helix_view::editor::BlockSelectState {
+                        head_col: coords.col,
+                        ..bs
+                    });
+                }
+                // Different line: head_col stays, cursor just moved vertically
+            }
+
             helix_event::dispatch(PostCommand { command, cx: cxt });
 
             let current_mode = cxt.editor.mode();
@@ -3542,9 +3635,10 @@ impl Component for EditorView {
 
         // Render file tree sidebar
         if sidebar_width > 0 {
-            // Clamp scroll to viewport before rendering
+            // Update viewport height before rendering (scroll is managed by
+            // ensure_selected_visible / scroll_view_up / scroll_view_down).
             if let Some(ref mut tree) = cx.editor.file_tree {
-                tree.clamp_scroll(sidebar_area.height as usize);
+                tree.update_viewport_height(sidebar_area.height as usize);
             }
             if let Some(ref tree) = cx.editor.file_tree {
                 super::file_tree::render_file_tree(

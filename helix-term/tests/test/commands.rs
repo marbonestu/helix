@@ -2,6 +2,7 @@ use helix_term::application::Application;
 
 use super::*;
 
+mod block_select;
 mod flash_jump;
 mod insert;
 mod movement;

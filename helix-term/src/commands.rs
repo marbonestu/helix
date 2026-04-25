@@ -41,8 +41,8 @@ use helix_core::{
     text_annotations::{Overlay, TextAnnotations},
     textobject,
     unicode::width::UnicodeWidthChar,
-    visual_offset_from_block, Deletion, LineEnding, Position, Range, Rope, RopeReader, RopeSlice,
-    Selection, SmallVec, Syntax, Tendril, Transaction,
+    coords_at_pos, visual_offset_from_block, Deletion, LineEnding, Position, Range, Rope,
+    RopeReader, RopeSlice, Selection, SmallVec, Syntax, Tendril, Transaction,
 };
 use helix_view::{
     document::{FormatterError, Mode, SCRATCH_BUFFER_NAME},
@@ -431,6 +431,7 @@ impl MappableCommand {
         normal_mode, "Enter normal mode",
         select_mode, "Enter selection extend mode",
         exit_select_mode, "Exit selection mode",
+        block_select_mode, "Enter/exit block (column) selection mode",
         goto_definition, "Goto definition",
         goto_declaration, "Goto declaration",
         add_newline_above, "Add newline above",
@@ -787,6 +788,26 @@ fn move_impl(cx: &mut Context, move_fn: MoveFn, dir: Direction, behaviour: Movem
     let text = doc.text().slice(..);
     let text_fmt = doc.text_format(view.inner_area(doc).width, None);
     let mut annotations = view.text_annotations(doc, None);
+
+    if cx.editor.block_select.is_some() {
+        // In block select: move cursor freely (Movement::Move) instead of
+        // extending. The dispatch-level hook in handle_keymap_event updates
+        // head_col after the command executes.
+        let primary = doc.selection(view.id).primary();
+        let new_primary = move_fn(
+            text,
+            primary,
+            dir,
+            count,
+            Movement::Move,
+            &text_fmt,
+            &mut annotations,
+        );
+        drop(annotations);
+        // Preserve the Range (keeps old_visual_position for sticky column)
+        doc.set_selection(view.id, Selection::new(SmallVec::from([new_primary]), 0));
+        return;
+    }
 
     let selection = doc.selection(view.id).clone().transform(|range| {
         move_fn(
@@ -1602,11 +1623,12 @@ where
     let count = cx.count();
     let (view, doc) = current!(cx.editor);
     let text = doc.text().slice(..);
+    let in_block_select = cx.editor.block_select.is_some();
 
     let selection = doc.selection(view.id).clone().transform(|range| {
         let word = extend_fn(text, range, count);
         let pos = word.cursor(text);
-        range.put_cursor(text, pos, true)
+        range.put_cursor(text, pos, !in_block_select)
     });
     doc.set_selection(view.id, selection);
 }
@@ -3076,6 +3098,10 @@ enum YankAction {
 }
 
 fn delete_selection_impl(cx: &mut Context, op: Operation, yank: YankAction) {
+    // Materialize block selection into multi-range before operating
+    if cx.editor.block_select.is_some() {
+        reconstruct_block_selection(cx.editor);
+    }
     let (view, doc) = current!(cx.editor);
 
     let selection = doc.selection(view.id);
@@ -4336,8 +4362,101 @@ fn select_mode(cx: &mut Context) {
 
 fn exit_select_mode(cx: &mut Context) {
     if cx.editor.mode == Mode::Select {
+        let was_block = cx.editor.block_select.is_some();
         cx.editor.mode = Mode::Normal;
+        cx.editor.block_select = None;
+        cx.editor.visual_kind = None;
+
+        // After block operations (delete/yank), collapse multi-range selection
+        // back to a single cursor at the primary range position.
+        if was_block {
+            let (view, doc) = current!(cx.editor);
+            let text = doc.text().slice(..);
+            let primary = doc.selection(view.id).primary();
+            let cursor = primary.cursor(text);
+            doc.set_selection(view.id, Selection::point(cursor));
+        }
     }
+}
+
+fn block_select_mode(cx: &mut Context) {
+    use helix_view::editor::{BlockSelectState, VisualKind};
+
+    // Toggle off if already in block select
+    if cx.editor.block_select.is_some() {
+        cx.editor.block_select = None;
+        cx.editor.visual_kind = None;
+        cx.editor.mode = Mode::Normal;
+        return;
+    }
+
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let primary = doc.selection(view.id).primary();
+    let cursor_pos = primary.cursor(text);
+    let coords = coords_at_pos(text, cursor_pos);
+
+    cx.editor.block_select = Some(BlockSelectState {
+        anchor_line: coords.row,
+        anchor_col: coords.col,
+        head_col: coords.col,
+    });
+    cx.editor.visual_kind = Some(VisualKind::Block);
+    cx.editor.mode = Mode::Select;
+}
+
+/// Materializes the block selection into a multi-range Selection for operations
+/// like delete, yank, and change.
+fn reconstruct_block_selection(editor: &mut Editor) {
+    let bs = match editor.block_select {
+        Some(bs) => bs,
+        None => return,
+    };
+
+    let (view, doc) = current!(editor);
+    let text = doc.text().slice(..);
+    let primary = doc.selection(view.id).primary();
+    let cursor_pos = primary.cursor(text);
+    let head_line = text.char_to_line(cursor_pos);
+
+    let line_start = bs.anchor_line.min(head_line);
+    let line_end = bs.anchor_line.max(head_line);
+    let col_start = bs.anchor_col.min(bs.head_col);
+    let col_end = bs.anchor_col.max(bs.head_col);
+
+    let mut ranges = SmallVec::new();
+    let mut primary_index = 0;
+
+    for line in line_start..=line_end {
+        if line >= text.len_lines() {
+            break;
+        }
+        let start = pos_at_coords(text, Position::new(line, col_start), true);
+        let end = pos_at_coords(text, Position::new(line, col_end + 1), true);
+
+        if line == head_line {
+            primary_index = ranges.len();
+        }
+
+        // Skip lines shorter than the block column range
+        if start >= end {
+            continue;
+        }
+
+        if bs.head_col >= bs.anchor_col {
+            ranges.push(Range::new(start, end));
+        } else {
+            ranges.push(Range::new(end, start));
+        }
+    }
+
+    if ranges.is_empty() {
+        return;
+    }
+
+    let view_id = view.id;
+    let selection = Selection::new(ranges, primary_index);
+    doc.set_selection(view_id, selection);
 }
 
 fn goto_first_diag(cx: &mut Context) {
@@ -5013,6 +5132,10 @@ fn commit_undo_checkpoint(cx: &mut Context) {
 // Yank / Paste
 
 fn yank(cx: &mut Context) {
+    // Materialize block selection into multi-range before yanking
+    if cx.editor.block_select.is_some() {
+        reconstruct_block_selection(cx.editor);
+    }
     yank_impl(
         cx.editor,
         cx.register
