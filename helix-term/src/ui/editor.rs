@@ -36,6 +36,18 @@ use std::{mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc, time::Instan
 
 use tui::{buffer::Buffer as Surface, text::Span};
 
+/// Tracks an in-progress mouse drag resize operation.
+enum DragResize {
+    /// Dragging the sidebar right-edge separator.
+    Sidebar { start_col: u16, start_width: u16 },
+    /// Dragging a split border (vertical or horizontal).
+    Split {
+        hit: helix_view::tree::SplitBorderHit,
+        /// Last column (vertical) or row (horizontal) seen during the drag.
+        last_pos: u16,
+    },
+}
+
 pub struct EditorView {
     pub keymaps: Keymaps,
     on_next_key: Option<(OnKeyCallback, OnKeyCallbackKind)>,
@@ -61,6 +73,8 @@ pub struct EditorView {
     pub vim_pending_op: Option<crate::vim::PendingOperator>,
     /// Last completed vim operator+motion for dot-repeat.
     pub vim_last_action: Option<crate::vim::VimRepeatAction>,
+    /// Active mouse drag-resize operation (sidebar or split border).
+    drag_resize: Option<DragResize>,
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +105,7 @@ impl EditorView {
             file_tree_g_pending: false,
             vim_pending_op: None,
             vim_last_action: None,
+            drag_resize: None,
         }
     }
 
@@ -579,14 +594,14 @@ impl EditorView {
         let cursor_scope = match mode {
             Mode::Insert => theme.find_highlight_exact("ui.cursor.insert"),
             Mode::Select | Mode::Visual => theme.find_highlight_exact("ui.cursor.select"),
-            Mode::Normal | Mode::Global => theme.find_highlight_exact("ui.cursor.normal"),
+            Mode::Normal | Mode::Global | Mode::FileTree => theme.find_highlight_exact("ui.cursor.normal"),
         }
         .unwrap_or(base_cursor_scope);
 
         let primary_cursor_scope = match mode {
             Mode::Insert => theme.find_highlight_exact("ui.cursor.primary.insert"),
             Mode::Select | Mode::Visual => theme.find_highlight_exact("ui.cursor.primary.select"),
-            Mode::Normal | Mode::Global => theme.find_highlight_exact("ui.cursor.primary.normal"),
+            Mode::Normal | Mode::Global | Mode::FileTree => theme.find_highlight_exact("ui.cursor.primary.normal"),
         }
         .unwrap_or(base_primary_cursor_scope);
 
@@ -2252,13 +2267,54 @@ impl EditorView {
             };
         }
 
+        // [keys.file_tree] lookup — runs before the modifier-key scroll handler so
+        // user bindings can override any default file-tree key. Only single-key
+        // bindings are matched; sequences silently fall through to the space-prefix
+        // handler which consults [keys.normal].
+        {
+            use crate::keymap::KeyTrie;
+            use crate::commands::MappableCommand;
+
+            let trie_entry = {
+                let map = self.keymaps.map();
+                map.get(&Mode::FileTree)
+                    .and_then(|trie| trie.search(&[key]))
+                    .cloned()
+            };
+
+            match trie_entry {
+                Some(KeyTrie::MappableCommand(MappableCommand::Static { name, .. })) => {
+                    let height = cx.editor.tree.area().height as usize;
+                    let count = self.file_tree_count.take().map_or(1, |n| n.get());
+                    if !Self::apply_tree_scroll(&mut cx.editor.file_tree, height, name, count) {
+                        self.handle_file_tree_command(name, cx);
+                    }
+                    return EventResult::Consumed(None);
+                }
+                Some(KeyTrie::MappableCommand(cmd @ MappableCommand::Typable { .. })) => {
+                    self.file_tree_count = None;
+                    cmd.execute(cx);
+                    return EventResult::Consumed(None);
+                }
+                Some(KeyTrie::MappableCommand(MappableCommand::Macro { keys, .. })) => {
+                    self.file_tree_count = None;
+                    cx.callback.push(Box::new(move |compositor, cx| {
+                        for k in keys {
+                            compositor.handle_event(&Event::Key(k), cx);
+                        }
+                    }));
+                    return EventResult::Consumed(None);
+                }
+                _ => {}
+            }
+        }
+
         // --- Keymap-driven scroll: runs before the match for modifier-key chords ---
         // When a modifier key (e.g. C-e, C-d) is remapped in the user's normal-mode
         // keymap to a scroll command or macro sequence, mirror that in the file tree.
         // This lets custom bindings like `C-e = "@9zj"` or `C-d = "@5j"` work here.
         if !key.modifiers.is_empty() {
             self.file_tree_g_pending = false;
-            use helix_view::document::Mode;
             use crate::keymap::KeyTrie;
             use crate::commands::MappableCommand;
 
