@@ -484,6 +484,32 @@ impl Tree {
         self.recalculate();
     }
 
+    /// Return the weight-per-pixel ratio for a container.
+    ///
+    /// For a vertical container this is `total_weight / usable_width` (excluding
+    /// inter-split gaps); for horizontal it is `total_weight / height`. Multiply
+    /// a pixel delta by this value to get the corresponding weight delta — this
+    /// makes the split border track the mouse cursor 1:1.
+    pub fn weight_per_pixel(&self, container_id: ViewId) -> f64 {
+        let container = match &self.nodes[container_id].content {
+            Content::Container(c) => c,
+            _ => return 0.01,
+        };
+        let total_weight: f64 = container.weights.iter().sum();
+        let usable_pixels = match container.layout {
+            Layout::Vertical => {
+                let gaps = (container.children.len() as u16).saturating_sub(1);
+                container.area.width.saturating_sub(gaps) as f64
+            }
+            Layout::Horizontal => container.area.height as f64,
+        };
+        if usable_pixels > 0.0 {
+            total_weight / usable_pixels
+        } else {
+            0.01
+        }
+    }
+
     /// Toggle zoom on the focused split. If already zoomed, unzoom; otherwise zoom.
     pub fn toggle_zoom(&mut self) {
         if self.zoom_state.is_some() {

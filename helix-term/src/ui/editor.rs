@@ -1746,17 +1746,14 @@ impl EditorView {
                                 helix_view::tree::Layout::Horizontal => (row, *last_pos),
                             };
                             if current != prev {
-                                let delta = current as f64 - prev as f64;
-                                // Scale pixel delta to weight delta: use a fixed
-                                // ratio so dragging feels consistent regardless of
-                                // container size.
-                                let weight_delta = delta * 0.01;
+                                let pixel_delta = current as f64 - prev as f64;
+                                let wpp = cxt.editor.tree.weight_per_pixel(hit.container_id);
+                                let weight_delta = pixel_delta * wpp;
                                 let container_id = hit.container_id;
                                 let child_index = hit.child_index;
                                 cxt.editor
                                     .tree
                                     .adjust_weights_at(container_id, child_index, weight_delta);
-                                // Update last_pos for next drag event.
                                 if let Some(DragResize::Split { last_pos, .. }) =
                                     self.drag_resize.as_mut()
                                 {
