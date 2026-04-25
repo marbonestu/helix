@@ -1783,7 +1783,7 @@ impl EditorView {
                 if column >= sep && column <= sep + 1 {
                     self.drag_resize = Some(DragResize::Sidebar {
                         start_col: column,
-                        start_width: cxt.editor.left_sidebar.width,
+                        start_width: cxt.editor.left_sidebar.rendered_width,
                     });
                     return EventResult::Consumed(None);
                 }
