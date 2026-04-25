@@ -261,8 +261,7 @@ pub struct FileTree {
     visible_dirty: bool,
     pub(crate) selected: usize,
     scroll_offset: usize,
-    /// Last known viewport height, updated by `clamp_scroll` on each render.
-    /// Used by scroll functions to keep the selection within the visible range.
+    /// Last known viewport height, updated by `update_viewport_height` on each render.
     viewport_height: usize,
 
     /// Sender half — cloned into background tasks.
@@ -1709,11 +1708,14 @@ impl FileTree {
     }
 
     fn ensure_selected_visible(&mut self) {
+        if self.viewport_height > 0
+            && self.selected >= self.scroll_offset + self.viewport_height
+        {
+            self.scroll_offset = self.selected - self.viewport_height + 1;
+        }
         if self.selected < self.scroll_offset {
             self.scroll_offset = self.selected;
         }
-        // Upper bound clamping happens in the render function where
-        // viewport height is known.
     }
 
     // --- Prompt mode ---
@@ -2304,15 +2306,22 @@ impl FileTree {
         self.scroll_offset
     }
 
+    /// Update the stored viewport height without clamping the scroll offset.
+    /// Called during render so that scroll methods have an up-to-date height.
+    pub fn update_viewport_height(&mut self, viewport_height: usize) {
+        if viewport_height > 0 {
+            self.viewport_height = viewport_height;
+        }
+    }
+
     /// Clamp scroll_offset so the selected item is within the viewport.
-    /// Called during render when viewport height is known.
-    pub fn clamp_scroll(&mut self, viewport_height: usize) {
-        if viewport_height == 0 {
+    /// Called after selection changes (not after viewport-only scrolling).
+    pub fn clamp_scroll(&mut self) {
+        if self.viewport_height == 0 {
             return;
         }
-        self.viewport_height = viewport_height;
-        if self.selected >= self.scroll_offset + viewport_height {
-            self.scroll_offset = self.selected - viewport_height + 1;
+        if self.selected >= self.scroll_offset + self.viewport_height {
+            self.scroll_offset = self.selected - self.viewport_height + 1;
         }
         if self.selected < self.scroll_offset {
             self.scroll_offset = self.selected;
@@ -3114,7 +3123,8 @@ mod tests {
 
         tree.selected = 4;
         tree.scroll_offset = 0;
-        tree.clamp_scroll(3); // viewport shows 3 items
+        tree.viewport_height = 3; // viewport shows 3 items
+        tree.clamp_scroll();
         // selected=4 must be visible: scroll_offset = 4 - 3 + 1 = 2
         assert_eq!(tree.scroll_offset, 2);
     }
@@ -3126,7 +3136,8 @@ mod tests {
 
         tree.selected = 1;
         tree.scroll_offset = 3;
-        tree.clamp_scroll(3);
+        tree.viewport_height = 3;
+        tree.clamp_scroll();
         assert_eq!(tree.scroll_offset, 1);
     }
 
