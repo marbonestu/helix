@@ -74,6 +74,32 @@ Feature: Resize the sidebar panel
       When Alex presses "3<C-left>"
       Then the sidebar should be 27 columns wide
 
+  Rule: Typable commands resize the sidebar
+
+    Example: :grow-sidebar grows the sidebar by 1 column
+      Given the sidebar is open and focused
+      And the sidebar width is 30 columns
+      When Alex presses ":grow-sidebar<ret>"
+      Then the sidebar should be 31 columns wide
+
+    Example: :shrink-sidebar shrinks the sidebar by 1 column
+      Given the sidebar is open and focused
+      And the sidebar width is 30 columns
+      When Alex presses ":shrink-sidebar<ret>"
+      Then the sidebar should be 29 columns wide
+
+    Example: :grow-sidebar accepts a count argument
+      Given the sidebar is open and focused
+      And the sidebar width is 30 columns
+      When Alex presses ":grow-sidebar 5<ret>"
+      Then the sidebar should be 35 columns wide
+
+    Example: :shrink-sidebar stops at minimum width
+      Given the sidebar is open and focused
+      And the sidebar width is 5 columns
+      When Alex presses ":shrink-sidebar<ret>"
+      Then the sidebar should be 5 columns wide
+
   Rule: Resizing editor splits does not change the sidebar width
 
     Example: Growing a split when the sidebar is visible and not focused leaves sidebar width unchanged

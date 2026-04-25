@@ -87,6 +87,42 @@ Feature: Resize editor splits
       When Alex presses "C-w >" to grow width
       Then the split size remains unchanged and no error occurs
 
+  Rule: Typable commands resize the focused split
+
+    Example: :grow-width grows the focused split
+      Given Alex has two vertical splits open side by side with equal widths
+      When Alex presses ":grow-width<ret>" to grow the focused split's width
+      Then the focused split should be wider than before
+      And the adjacent sibling split should be narrower than before
+
+    Example: :shrink-width shrinks the focused split
+      Given Alex has two vertical splits open side by side with equal widths
+      When Alex presses ":shrink-width<ret>" to shrink the focused split's width
+      Then the focused split should be narrower than before
+      And the adjacent sibling split should be wider than before
+
+    Example: :grow-height grows the focused split
+      Given Alex has two horizontal splits stacked vertically with equal heights
+      When Alex presses ":grow-height<ret>" to grow the focused split's height
+      Then the focused split should be taller than before
+      And the sibling split below should be shorter than before
+
+    Example: :shrink-height shrinks the focused split
+      Given Alex has two horizontal splits stacked vertically with equal heights
+      When Alex presses ":shrink-height<ret>" to shrink the focused split's height
+      Then the focused split should be shorter than before
+      And the sibling split below should be taller than before
+
+    Example: :grow-width accepts an optional count argument
+      Given Alex has two vertical splits open side by side with equal widths
+      When Alex presses ":grow-width 3<ret>" to grow the focused split's width
+      Then the focused split should be wider than before
+
+    Example: :grow-width on a single split does nothing
+      Given Alex has only one split open
+      When Alex presses ":grow-width<ret>" to grow width
+      Then the split size remains unchanged and no error occurs
+
   Rule: Minimum weight prevents a sibling from collapsing completely
 
     Example: Aggressively growing width stops before the sibling reaches minimum weight
