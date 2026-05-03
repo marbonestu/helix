@@ -2766,6 +2766,24 @@ impl EditorView {
                 }
                 EventResult::Consumed(None)
             }
+            KeyCode::Char('O') => {
+                if let Some(ref tree) = cx.editor.file_tree {
+                    if let Some(id) = tree.selected_id() {
+                        if tree.nodes().get(id).map(|n| n.kind) == Some(NodeKind::File) {
+                            let path = tree.node_path(id);
+                            #[cfg(target_os = "macos")]
+                            let opener = "open";
+                            #[cfg(not(target_os = "macos"))]
+                            let opener = "xdg-open";
+                            match std::process::Command::new(opener).arg(path.as_os_str()).spawn() {
+                                Ok(_) => cx.editor.set_status(format!("Opening in OS: {}", path.display())),
+                                Err(e) => cx.editor.set_error(format!("Cannot open file: {e}")),
+                            }
+                        }
+                    }
+                }
+                EventResult::Consumed(None)
+            }
             KeyCode::Char('q') => {
                 cx.editor.left_sidebar.visible = false;
                 cx.editor.left_sidebar.focused = false;
