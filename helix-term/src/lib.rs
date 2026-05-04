@@ -48,7 +48,12 @@ fn true_color() -> bool {
 }
 
 /// Function used for filtering dir entries in the various file pickers.
-fn filter_picker_entry(entry: &DirEntry, root: &Path, dedup_symlinks: bool) -> bool {
+fn filter_picker_entry(
+    entry: &DirEntry,
+    root: &Path,
+    dedup_symlinks: bool,
+    skip_submodules: bool,
+) -> bool {
     // We always want to ignore popular VCS directories, otherwise if
     // `ignore` is turned off, we end up with a lot of noise
     // in our picker.
@@ -57,6 +62,20 @@ fn filter_picker_entry(entry: &DirEntry, root: &Path, dedup_symlinks: bool) -> b
         Some(".git" | ".pijul" | ".jj" | ".hg" | ".svn")
     ) {
         return false;
+    }
+
+    // Skip git submodule directories. A submodule root contains a `.git`
+    // file (not directory) with a `gitdir:` pointer.
+    if skip_submodules
+        && entry.depth() > 0
+        && entry
+            .file_type()
+            .map_or(false, |ft| ft.is_dir() || ft.is_symlink())
+    {
+        let git_path = entry.path().join(".git");
+        if git_path.is_file() {
+            return false;
+        }
     }
 
     // We also ignore symlinks that point inside the current directory

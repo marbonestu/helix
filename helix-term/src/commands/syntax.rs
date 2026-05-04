@@ -222,6 +222,7 @@ pub fn syntax_workspace_symbol_picker(cx: &mut Context) {
 
     let config = cx.editor.config();
     let dedup_symlinks = config.file_picker.deduplicate_links;
+    let skip_submodules = !config.file_picker.git_submodules;
 
     let mut walk_builder = WalkBuilder::new(&search_root);
     walk_builder
@@ -233,7 +234,9 @@ pub fn syntax_workspace_symbol_picker(cx: &mut Context) {
         .git_global(config.file_picker.git_global)
         .git_exclude(config.file_picker.git_exclude)
         .max_depth(config.file_picker.max_depth)
-        .filter_entry(move |entry| filter_picker_entry(entry, &absolute_root, dedup_symlinks))
+        .filter_entry(move |entry| {
+            filter_picker_entry(entry, &absolute_root, dedup_symlinks, skip_submodules)
+        })
         .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
         .add_custom_ignore_filename(".helix/ignore");
 

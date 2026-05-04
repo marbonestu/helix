@@ -255,6 +255,9 @@ pub struct FilePickerConfig {
     /// Enables reading `.git/info/exclude` files.
     /// Whether to hide files listed in .git/info/exclude in file picker and global search results. Defaults to true.
     pub git_exclude: bool,
+    /// Enables traversal of git submodule directories.
+    /// Whether to include files inside git submodules in file picker and global search results. Defaults to false.
+    pub git_submodules: bool,
     /// WalkBuilder options
     /// Maximum Depth to recurse directories in file picker and global search. Defaults to `None`.
     pub max_depth: Option<usize>,
@@ -271,6 +274,7 @@ impl Default for FilePickerConfig {
             git_ignore: true,
             git_global: true,
             git_exclude: true,
+            git_submodules: false,
             max_depth: None,
         }
     }
