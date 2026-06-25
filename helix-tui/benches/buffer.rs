@@ -80,7 +80,7 @@ fn bench_diff_typical(c: &mut Criterion) {
 
     // Modify every 10th cell to simulate a typical partial-redraw frame.
     for i in (0..buf_b.content.len()).step_by(10) {
-        buf_b.content[i].symbol = "X".to_string();
+        buf_b.content[i].set_symbol("X");
     }
 
     c.bench_function("buffer/diff/typical_10pct_changed", |b| {

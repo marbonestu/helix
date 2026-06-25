@@ -341,7 +341,9 @@ pub fn render_file_tree(
                 let cursor_ch = after.chars().next().unwrap_or(' ');
                 let cursor_ch_width = cursor_ch.len_utf8(); // byte width for slicing
                 if remaining(x) > 0 {
-                    let next = surface.set_stringn(x, prompt_y, cursor_ch.to_string(), remaining(x), cursor_style);
+                    let mut cursor_buf = [0u8; 4];
+                    let cursor_str = cursor_ch.encode_utf8(&mut cursor_buf);
+                    let next = surface.set_stringn(x, prompt_y, cursor_str, remaining(x), cursor_style);
                     x = next.0;
                 }
 

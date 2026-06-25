@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Helix Markdown Preview</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5/github-markdown.min.css" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github.min.css" />
+<style>
+  body { margin: 0; background: #fff; }
+  #content { box-sizing: border-box; max-width: 900px; margin: 0 auto; padding: 32px 48px; }
+  .cursor-line { background: rgba(255, 215, 0, 0.18); }
+  #status { position: fixed; top: 8px; right: 12px; font: 12px monospace; color: #999; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #0d1117; }
+    .markdown-body { color-scheme: dark; }
+  }
+</style>
+</head>
+<body>
+<div id="status">connecting…</div>
+<article id="content" class="markdown-body"></article>
+
+<script src="https://cdn.jsdelivr.net/npm/markdown-it@14/dist/markdown-it.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/morphdom@2/dist/morphdom-umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11/lib/common.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script>
+const statusEl = document.getElementById('status');
+const content = document.getElementById('content');
+
+const md = window.markdownit({
+  html: true,
+  linkify: true,
+  highlight(str, lang) {
+    if (lang && hljs.getLanguage(lang)) {
+      try { return hljs.highlight(str, { language: lang }).value; } catch (_) {}
+    }
+    return '';
+  },
+});
+
+// Annotate every top-level block with its 1-based source line so we can
+// scroll the browser to follow the editor cursor.
+md.core.ruler.push('source_line', (state) => {
+  for (const token of state.tokens) {
+    if (token.level === 0 && token.map) {
+      token.attrSet('data-source-line', String(token.map[0] + 1));
+    }
+  }
+});
+
+mermaid.initialize({ startOnLoad: false, theme: 'default' });
+
+let mermaidSeq = 0;
+async function renderMermaid(root) {
+  const blocks = root.querySelectorAll('pre > code.language-mermaid');
+  for (const code of blocks) {
+    const pre = code.parentElement;
+    const src = code.textContent;
+    try {
+      const { svg } = await mermaid.render('mmd-' + (mermaidSeq++), src);
+      const wrap = document.createElement('div');
+      wrap.className = 'mermaid-rendered';
+      wrap.innerHTML = svg;
+      pre.replaceWith(wrap);
+    } catch (e) {
+      pre.innerHTML = '<span style="color:#c00">mermaid error: ' + e.message + '</span>';
+    }
+  }
+}
+
+function render(markdown) {
+  const html = md.render(markdown);
+  const next = document.createElement('article');
+  next.id = 'content';
+  next.className = 'markdown-body';
+  next.innerHTML = html;
+  // morphdom preserves scroll position and untouched nodes across updates.
+  morphdom(content, next, { childrenOnly: false });
+  renderMermaid(content);
+  renderMathInElement(content, {
+    delimiters: [
+      { left: '$$', right: '$$', display: true },
+      { left: '$', right: '$', display: false },
+    ],
+    throwOnError: false,
+  });
+}
+
+function scrollToLine(line) {
+  const els = [...content.querySelectorAll('[data-source-line]')];
+  let target = null;
+  for (const el of els) {
+    if (Number(el.dataset.sourceLine) <= line) target = el;
+    else break;
+  }
+  content.querySelectorAll('.cursor-line').forEach((e) => e.classList.remove('cursor-line'));
+  if (target) {
+    target.classList.add('cursor-line');
+    target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+}
+
+const es = new EventSource('/events');
+es.onopen = () => { statusEl.textContent = 'live'; };
+es.onerror = () => { statusEl.textContent = 'reconnecting…'; };
+es.addEventListener('doc', (ev) => {
+  const { text } = JSON.parse(ev.data);
+  render(text || '');
+});
+es.addEventListener('cursor', (ev) => {
+  const { line } = JSON.parse(ev.data);
+  scrollToLine(line);
+});
+</script>
+</body>
+</html>

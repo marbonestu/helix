@@ -1,0 +1,18 @@
+[package]
+name = "helix-md-preview"
+version = "0.1.0"
+edition = "2021"
+description = "Standalone live markdown preview sidecar for Helix (HTTP + SSE + browser renderer)"
+license = "MPL-2.0"
+
+[[bin]]
+name = "hx-md-preview"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "net"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+axum = "0.7"
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

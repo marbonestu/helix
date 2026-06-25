@@ -1176,6 +1176,7 @@ impl FileTree {
         &mut self,
         config: &FileTreeConfig,
         diff_providers: Option<&DiffProviderRegistry>,
+        trust_full: bool,
     ) {
         // Pick up the Debouncer from the background watcher-init task if ready.
         if self._watcher.is_none() {
@@ -1199,7 +1200,7 @@ impl FileTree {
 
         // Check debounce timers
         if let Some(providers) = diff_providers {
-            self.check_git_refresh_timer(providers);
+            self.check_git_refresh_timer(providers, trust_full);
         }
         self.check_follow_timer(config);
 
@@ -1405,7 +1406,7 @@ impl FileTree {
                         self.git_refresh_pending = false;
                         if let Some(providers) = diff_providers {
                             let providers = providers.clone();
-                            self.spawn_git_status(providers);
+                            self.spawn_git_status(providers, trust_full);
                         }
                     }
                 }
@@ -2510,13 +2511,13 @@ impl FileTree {
         }
     }
 
-    fn check_git_refresh_timer(&mut self, diff_providers: &DiffProviderRegistry) {
+    fn check_git_refresh_timer(&mut self, diff_providers: &DiffProviderRegistry, trust_full: bool) {
         if let Some(deadline) = self.git_refresh_deadline {
             if Instant::now() >= deadline {
                 self.git_refresh_deadline = None;
                 // Clone before the mutable borrow so the compiler is happy.
                 let providers = diff_providers.clone();
-                self.spawn_git_status(providers);
+                self.spawn_git_status(providers, trust_full);
             }
         }
     }
@@ -2542,7 +2543,7 @@ impl FileTree {
     /// `git_status_map` so the tree continues to show the previous scan's data
     /// during the refresh (no blank flash). At `GitStatusEnd`, `git_status_map`
     /// is atomically replaced with `git_status_new` to purge stale entries.
-    fn spawn_git_status(&mut self, diff_providers: DiffProviderRegistry) {
+    fn spawn_git_status(&mut self, diff_providers: DiffProviderRegistry, trust_full: bool) {
         // Only clear the incoming buffer, not the live map. This lets the tree
         // keep showing previous-cycle data while the new scan is in flight.
         self.git_status_new.clear();
@@ -2557,7 +2558,7 @@ impl FileTree {
             let tx1 = tx.clone();
             let root1 = root.clone();
             let providers1 = diff_providers.clone();
-            providers1.for_each_changed_file_tracked_only_blocking(&root1, |result| {
+            providers1.for_each_changed_file_tracked_only_blocking(&root1, trust_full, |result| {
                 if let Ok(change) = result {
                     let status = match &change {
                         FileChange::Untracked { .. } => GitStatus::Untracked,
@@ -2577,7 +2578,7 @@ impl FileTree {
 
             // Phase 2: full scan including untracked files.
             let tx2 = tx.clone();
-            diff_providers.for_each_untracked_files_blocking(&root, |result| {
+            diff_providers.for_each_untracked_files_blocking(&root, trust_full, |result| {
                 if let Ok(change) = result {
                     let status = match &change {
                         FileChange::Untracked { .. } => GitStatus::Untracked,
@@ -2943,7 +2944,7 @@ mod tests {
         })
         .unwrap();
 
-        tree.process_updates(&config, None);
+        tree.process_updates(&config, None, true);
 
         let root = &tree.nodes[root_id];
         assert_eq!(root.children.len(), 2);
@@ -2974,7 +2975,7 @@ mod tests {
         })
         .unwrap();
 
-        tree.process_updates(&config, None);
+        tree.process_updates(&config, None, true);
 
         // Old children (src, Cargo.toml) should be removed
         assert!(tree.nodes.get(src_id).is_none());
@@ -3050,7 +3051,7 @@ mod tests {
         ]))
         .unwrap();
 
-        tree.process_updates(&config, None);
+        tree.process_updates(&config, None, true);
 
         assert!(tree.git_status_map.contains_key(&PathBuf::from("/tmp/project/src/main.rs")));
         // Dir cache should be rebuilt
@@ -3190,7 +3191,7 @@ mod tests {
 
         // Wait for sub directory load to complete
         tokio::time::sleep(Duration::from_millis(500)).await;
-        tree.process_updates(&config, None);
+        tree.process_updates(&config, None, true);
 
         // The file should be selected
         let selected_node = tree.selected_node().unwrap();

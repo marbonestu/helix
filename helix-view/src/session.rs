@@ -198,7 +198,7 @@ fn capture_view(view: &View, documents: &BTreeMap<DocumentId, Document>) -> Sess
         .iter()
         .filter_map(|(doc_id, sel)| {
             let jdoc = documents.get(doc_id)?;
-            let path = jdoc.path()?.clone();
+            let path = jdoc.path()?.to_path_buf();
             let primary = sel.primary();
             Some(SessionJump {
                 path,
@@ -210,14 +210,14 @@ fn capture_view(view: &View, documents: &BTreeMap<DocumentId, Document>) -> Sess
 
     SessionView {
         document: SessionDocument {
-            path: doc.path().cloned(),
+            path: doc.path().map(std::path::Path::to_path_buf),
             selection: Some((primary.anchor, primary.head)),
             view_position,
         },
         docs_access_history: view
             .docs_access_history
             .iter()
-            .filter_map(|id| documents.get(id)?.path().cloned())
+            .filter_map(|id| Some(documents.get(id)?.path()?.to_path_buf()))
             .collect(),
         jumps,
     }

@@ -309,8 +309,9 @@ impl FlashPrompt {
 
         // Save to jumplist
         let jump = (doc.id(), doc.selection(self.view_id).clone());
+        let doc = editor.documents.get_mut(&self.doc_id).unwrap();
         let view = editor.tree.get_mut(self.view_id);
-        view.jumps.push(jump);
+        view.push_jump(doc, jump);
 
         let doc = editor.documents.get_mut(&self.doc_id).unwrap();
         doc.set_selection(self.view_id, range.into());

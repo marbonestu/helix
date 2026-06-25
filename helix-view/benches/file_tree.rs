@@ -243,9 +243,10 @@ fn bench_children_loaded_rescan(c: &mut Criterion) {
                         .try_send(FileTreeUpdate::ChildrenLoaded {
                             parent: dir_id,
                             entries: entries.clone(),
+                            ignored_names: Default::default(),
                         })
                         .unwrap();
-                    tree.process_updates(&config, None);
+                    tree.process_updates(&config, None, true);
                 })
             },
         );
@@ -272,7 +273,7 @@ fn inject_git_status(tree: &mut FileTree, config: &FileTreeConfig, nth: usize) {
     tree.update_tx()
         .try_send(FileTreeUpdate::GitStatus(statuses))
         .unwrap();
-    tree.process_updates(config, None);
+    tree.process_updates(config, None, true);
 }
 
 /// `Document::open` — the actual file-load triggered after `node_path`.
