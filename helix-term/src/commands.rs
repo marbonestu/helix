@@ -573,6 +573,8 @@ impl MappableCommand {
         align_view_bottom, "Align view bottom",
         scroll_up, "Scroll view up",
         scroll_down, "Scroll view down",
+        scroll_left, "Scroll view left",
+        scroll_right, "Scroll view right",
         match_brackets, "Goto matching bracket",
         surround_add, "Surround add",
         surround_replace, "Surround replace",
@@ -2154,6 +2156,101 @@ pub fn scroll(cx: &mut Context, offset: usize, direction: Direction, sync_cursor
     sel = sel.replace(idx, prim_sel);
     drop(annotations);
     doc.set_selection(view.id, sel);
+}
+
+/// Scroll the view horizontally by `offset` visual columns. Mirrors [`scroll`]:
+/// the view moves freely and the cursor is only dragged once it would leave the
+/// horizontal viewport (respecting `scrolloff`). No-op when soft-wrap is on,
+/// since there is no horizontal offset in that case.
+pub fn scroll_horizontal(cx: &mut Context, offset: usize, direction: Direction) {
+    use Direction::*;
+    let config = cx.editor.config();
+    let (view, doc) = current!(cx.editor);
+
+    let viewport = view.inner_area(doc);
+    let text_fmt = doc.text_format(viewport.width, None);
+    if text_fmt.soft_wrap {
+        return;
+    }
+
+    let mut view_offset = doc.view_offset(view.id);
+    view_offset.horizontal_offset = match direction {
+        Forward => view_offset.horizontal_offset + offset,
+        Backward => view_offset.horizontal_offset.saturating_sub(offset),
+    };
+    doc.set_view_offset(view.id, view_offset);
+
+    // Drag the cursor along only if it would fall outside the horizontal
+    // viewport, matching the scrolloff clamping done while rendering.
+    let width = viewport.width as usize;
+    let scrolloff = config.scrolloff.min(width.saturating_sub(1) / 2);
+
+    let doc_text = doc.text().slice(..);
+    let annotations = view.text_annotations(&*doc, None);
+    let range = doc.selection(view.id).primary();
+    let cursor = range.cursor(doc_text);
+
+    // Visual column of the cursor on its own visual line.
+    let cursor_col = visual_offset_from_block(
+        doc_text,
+        view_offset.anchor,
+        cursor,
+        &text_fmt,
+        &annotations,
+    )
+    .0
+    .col;
+
+    let left = view_offset.horizontal_offset + scrolloff;
+    let right = (view_offset.horizontal_offset + width).saturating_sub(scrolloff + 1);
+    let target_col = match direction {
+        Forward if cursor_col < left => Some(left),
+        Backward if cursor_col > right => Some(right),
+        _ => None,
+    };
+
+    let Some(target_col) = target_col else {
+        return;
+    };
+
+    // Find the char at the target visual column on the cursor's visual line.
+    let line_start = char_idx_at_visual_offset(
+        doc_text,
+        cursor,
+        0,
+        0,
+        &text_fmt,
+        &annotations,
+    )
+    .0;
+    let (head, _) = char_idx_at_visual_offset(
+        doc_text,
+        line_start,
+        0,
+        target_col,
+        &text_fmt,
+        &annotations,
+    );
+
+    let anchor = if cx.editor.mode == Mode::Select {
+        range.anchor
+    } else {
+        head
+    };
+    let prim_sel = Range::new(anchor, head);
+    let mut sel = doc.selection(view.id).clone();
+    let idx = sel.primary_index();
+    sel = sel.replace(idx, prim_sel);
+    drop(annotations);
+    doc.set_selection(view.id, sel);
+}
+
+fn scroll_left(cx: &mut Context) {
+    scroll_horizontal(cx, cx.count(), Direction::Backward);
+}
+
+fn scroll_right(cx: &mut Context) {
+    scroll_horizontal(cx, cx.count(), Direction::Forward);
 }
 
 fn page_up(cx: &mut Context) {

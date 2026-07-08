@@ -202,6 +202,8 @@ useful when you're simply looking over text and not actively editing it.
 | `m`                  | Align the line to the middle of the screen (horizontally) | `align_view_middle`     |
 | `j`, `down`          | Scroll the view downwards                                 | `scroll_down`           |
 | `k`, `up`            | Scroll the view upwards                                   | `scroll_up`             |
+| `h`, `left`          | Scroll the view leftwards                                 | `scroll_left`           |
+| `l`, `right`         | Scroll the view rightwards                                | `scroll_right`          |
 | `Ctrl-f`, `PageDown` | Move page down                                            | `page_down`             |
 | `Ctrl-b`, `PageUp`   | Move page up                                              | `page_up`               |
 | `Ctrl-u`             | Move cursor and page half page up                         | `page_cursor_half_up`   |

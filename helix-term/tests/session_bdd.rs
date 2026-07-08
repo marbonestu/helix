@@ -10,13 +10,8 @@ use session_steps::SessionWorld;
 
 #[tokio::main]
 async fn main() {
-    // CARGO_MANIFEST_DIR is the helix-term crate root, baked in at compile time.
-    // From there, the feature files live at ../../../../specs/session-persistence
-    // relative to the worktree layout (.claude/worktrees/<id>/helix-term/).
-    let features_dir = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../../../specs/session-persistence"
-    );
+    // CARGO_MANIFEST_DIR is helix-term; specs live one level up in helix root.
+    let features_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../specs/session-persistence");
 
     // Run scenarios serially to avoid HELIX_WORKSPACE env-var conflicts between
     // concurrent live-editor scenarios.

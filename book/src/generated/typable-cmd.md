@@ -69,6 +69,12 @@
 | `:vsplit-new`, `:vnew` | Open a scratch buffer in a vertical split. |
 | `:hsplit`, `:hs`, `:sp` | Open the file in a horizontal split. |
 | `:hsplit-new`, `:hnew` | Open a scratch buffer in a horizontal split. |
+| `:grow-width`, `:gw` | Grow the width of the focused split or sidebar. Optional count argument (default 1). |
+| `:shrink-width`, `:sw` | Shrink the width of the focused split or sidebar. Optional count argument (default 1). |
+| `:grow-height`, `:gh` | Grow the height of the focused split. Optional count argument (default 1). |
+| `:shrink-height`, `:sh` | Shrink the height of the focused split. Optional count argument (default 1). |
+| `:grow-sidebar`, `:gsb` | Grow the sidebar width. Optional count argument (default 1). |
+| `:shrink-sidebar`, `:ssb` | Shrink the sidebar width. Optional count argument (default 1). |
 | `:tutor` | Open the tutorial. |
 | `:goto`, `:g` | Goto line number. |
 | `:set-language`, `:lang` | Set the language of current buffer (show current language if no value specified). |
@@ -94,9 +100,21 @@
 | `:move`, `:mv` | Move the current buffer and its corresponding file to a different path |
 | `:move!`, `:mv!` | Move the current buffer and its corresponding file to a different path creating necessary subdirectories |
 | `:yank-diagnostic` | Yank diagnostic(s) under primary cursor to register, or clipboard by default |
+| `:yank-buffer-path`, `:ybp` | Yank the buffer's file path to register, or clipboard by default |
+| `:yank-buffer-reference`, `:ybr` | Yank file path with line numbers for each selection to register, or clipboard by default. Use --content to include selected text. |
 | `:read`, `:r` | Load a file into buffer |
 | `:echo` | Prints the given arguments to the statusline. |
+| `:session-save`, `:ss` | Save the current editor session. Optionally accepts a session name. |
+| `:session-restore`, `:sr` | Restore a previously saved session. Optionally accepts a session name. |
+| `:session-delete`, `:sd` | Delete the saved session file. Optionally accepts a session name. |
+| `:session-list`, `:sl` | List all saved sessions. |
 | `:noop` | Does nothing. |
 | `:workspace-trust` | Allow language servers and local config for the current workspace. |
 | `:workspace-untrust` | Revoke the current workspace's trust grant or exclusion. |
 | `:workspace-exclude` | Mark the current workspace as never-prompt. Never prompts for trust again. |
+| `:tree-toggle` | Toggle file tree sidebar visibility. |
+| `:tree-reveal` | Reveal current file in file tree. |
+| `:equalize-splits`, `:equal` | Reset all splits to equal sizes. |
+| `:toggle-zoom`, `:zoom` | Toggle zoom on the focused split. |
+| `:git-open`, `:go` | Open the current file on the git hosting website (GitHub, GitLab, Bitbucket…). |
+| `:git-open-line`, `:gol` | Open the current file at the cursor line on the git hosting website. |

@@ -2116,12 +2116,21 @@ impl EditorView {
                 EventResult::Consumed(None)
             }
 
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+            MouseEventKind::ScrollUp
+            | MouseEventKind::ScrollDown
+            | MouseEventKind::ScrollLeft
+            | MouseEventKind::ScrollRight => {
                 let current_view = cxt.editor.tree.focus;
 
-                let direction = match event.kind {
-                    MouseEventKind::ScrollUp => Direction::Backward,
-                    MouseEventKind::ScrollDown => Direction::Forward,
+                // Holding Shift while scrolling the (usually vertical) wheel
+                // scrolls horizontally instead, matching common terminal
+                // conventions: Shift+up -> left, Shift+down -> right.
+                let shift = modifiers.contains(KeyModifiers::SHIFT);
+                let (direction, horizontal) = match event.kind {
+                    MouseEventKind::ScrollUp => (Direction::Backward, shift),
+                    MouseEventKind::ScrollDown => (Direction::Forward, shift),
+                    MouseEventKind::ScrollLeft => (Direction::Backward, true),
+                    MouseEventKind::ScrollRight => (Direction::Forward, true),
                     _ => unreachable!(),
                 };
 
@@ -2131,7 +2140,11 @@ impl EditorView {
                 }
 
                 let offset = config.scroll_lines.unsigned_abs();
-                commands::scroll(cxt, offset, direction, false);
+                if horizontal {
+                    commands::scroll_horizontal(cxt, offset, direction);
+                } else {
+                    commands::scroll(cxt, offset, direction, false);
+                }
 
                 cxt.editor.tree.focus = current_view;
                 cxt.editor.ensure_cursor_in_view(current_view);

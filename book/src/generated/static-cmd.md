@@ -103,13 +103,17 @@
 | `file_explorer` | Open file explorer in workspace root | normal: `` <space>e ``, select: `` <space>e `` |
 | `file_explorer_in_current_buffer_directory` | Open file explorer at current buffer's directory | normal: `` <space>. ``, select: `` <space>. `` |
 | `file_explorer_in_current_directory` | Open file explorer at current working directory |  |
+| `toggle_file_tree` | Toggle file tree sidebar | normal: `` <space>E ``, select: `` <space>E `` |
+| `focus_file_tree` | Focus file tree sidebar |  |
+| `reveal_in_file_tree` | Reveal current file in tree | normal: `` <space><A-e> ``, select: `` <space><A-e> `` |
+| `toggle_reveal_file_tree` | Reveal current file in tree, or return to buffer if tree is focused | normal: `` <C-e> ``, select: `` <C-e> `` |
 | `code_action` | Perform code action | normal: `` <space>a ``, select: `` <space>a `` |
 | `buffer_picker` | Open buffer picker | normal: `` <space>b ``, select: `` <space>b `` |
 | `jumplist_picker` | Open jumplist picker | normal: `` <space>j ``, select: `` <space>j `` |
 | `symbol_picker` | Open symbol picker |  |
 | `syntax_symbol_picker` | Open symbol picker from syntax information |  |
 | `lsp_or_syntax_symbol_picker` | Open symbol picker from LSP or syntax information | normal: `` <space>s ``, select: `` <space>s `` |
-| `changed_file_picker` | Open changed file picker | normal: `` <space>g ``, select: `` <space>g `` |
+| `changed_file_picker` | Open changed file picker | normal: `` <space>gg ``, select: `` <space>gg `` |
 | `select_references_to_symbol_under_cursor` | Select symbol references | normal: `` <space>h ``, select: `` <space>h `` |
 | `workspace_symbol_picker` | Open workspace symbol picker |  |
 | `syntax_workspace_symbol_picker` | Open workspace symbol picker from syntax information |  |
@@ -124,6 +128,7 @@
 | `normal_mode` | Enter normal mode | normal: `` <esc> ``, select: `` v ``, insert: `` <esc> `` |
 | `select_mode` | Enter selection extend mode | normal: `` v `` |
 | `exit_select_mode` | Exit selection mode | select: `` <esc> `` |
+| `block_select_mode` | Enter/exit block (column) selection mode | normal: `` <C-v> ``, select: `` <C-v> `` |
 | `goto_definition` | Goto definition | normal: `` gd ``, select: `` gd `` |
 | `goto_declaration` | Goto declaration | normal: `` gD ``, select: `` gD `` |
 | `add_newline_above` | Add newline above | normal: `` [<space> ``, select: `` [<space> `` |
@@ -248,6 +253,14 @@
 | `vsplit_new` | Vertical right split scratch buffer | normal: `` <C-w>nv ``, `` <space>wnv ``, `` <C-w>n<C-v> ``, `` <space>wn<C-v> ``, select: `` <C-w>nv ``, `` <space>wnv ``, `` <C-w>n<C-v> ``, `` <space>wn<C-v> `` |
 | `wclose` | Close window | normal: `` <C-w>q ``, `` <space>wq ``, `` <C-w><C-q> ``, `` <space>w<C-q> ``, select: `` <C-w>q ``, `` <space>wq ``, `` <C-w><C-q> ``, `` <space>w<C-q> `` |
 | `wonly` | Close windows except current | normal: `` <C-w>o ``, `` <space>wo ``, `` <C-w><C-o> ``, `` <space>w<C-o> ``, select: `` <C-w>o ``, `` <space>wo ``, `` <C-w><C-o> ``, `` <space>w<C-o> `` |
+| `grow_width` | Grow split width | normal: `` <C-right> ``, `` <C-w><gt> ``, `` <space>w<gt> ``, select: `` <C-right> ``, `` <C-w><gt> ``, `` <space>w<gt> `` |
+| `shrink_width` | Shrink split width | normal: `` <C-left> ``, `` <C-w><lt> ``, `` <space>w<lt> ``, select: `` <C-left> ``, `` <C-w><lt> ``, `` <space>w<lt> `` |
+| `grow_height` | Grow split height | normal: `` <C-w>+ ``, `` <C-down> ``, `` <space>w+ ``, select: `` <C-w>+ ``, `` <C-down> ``, `` <space>w+ `` |
+| `shrink_height` | Shrink split height | normal: `` <C-up> ``, `` <C-w><minus> ``, `` <space>w<minus> ``, select: `` <C-up> ``, `` <C-w><minus> ``, `` <space>w<minus> `` |
+| `equalize_splits` | Equalize split sizes | normal: `` <C-w>= ``, `` <space>w= ``, select: `` <C-w>= ``, `` <space>w= `` |
+| `toggle_zoom` | Toggle zoom on focused split | normal: `` <C-w>z ``, `` <space>wz ``, select: `` <C-w>z ``, `` <space>wz `` |
+| `grow_sidebar_width` | Grow the sidebar panel width |  |
+| `shrink_sidebar_width` | Shrink the sidebar panel width |  |
 | `select_register` | Select register | normal: `` " ``, select: `` " `` |
 | `insert_register` | Insert register | insert: `` <C-r> `` |
 | `copy_between_registers` | Copy between two registers |  |
@@ -257,28 +270,47 @@
 | `align_view_bottom` | Align view bottom | normal: `` Zb ``, `` zb ``, select: `` Zb ``, `` zb `` |
 | `scroll_up` | Scroll view up | normal: `` Zk ``, `` zk ``, `` Z<up> ``, `` z<up> ``, select: `` Zk ``, `` zk ``, `` Z<up> ``, `` z<up> `` |
 | `scroll_down` | Scroll view down | normal: `` Zj ``, `` zj ``, `` Z<down> ``, `` z<down> ``, select: `` Zj ``, `` zj ``, `` Z<down> ``, `` z<down> `` |
+| `scroll_left` | Scroll view left | normal: `` Zh ``, `` zh ``, `` Z<left> ``, `` z<left> ``, select: `` Zh ``, `` zh ``, `` Z<left> ``, `` z<left> `` |
+| `scroll_right` | Scroll view right | normal: `` Zl ``, `` zl ``, `` Z<right> ``, `` z<right> ``, select: `` Zl ``, `` zl ``, `` Z<right> ``, `` z<right> `` |
 | `match_brackets` | Goto matching bracket | normal: `` mm ``, select: `` mm `` |
 | `surround_add` | Surround add | normal: `` ms ``, select: `` ms `` |
 | `surround_replace` | Surround replace | normal: `` mr ``, select: `` mr `` |
 | `surround_delete` | Surround delete | normal: `` md ``, select: `` md `` |
 | `select_textobject_around` | Select around object | normal: `` ma ``, select: `` ma `` |
 | `select_textobject_inner` | Select inside object | normal: `` mi ``, select: `` mi `` |
-| `goto_next_function` | Goto next function | normal: `` ]f ``, select: `` ]f `` |
-| `goto_prev_function` | Goto previous function | normal: `` [f ``, select: `` [f `` |
-| `goto_next_class` | Goto next type definition | normal: `` ]t ``, select: `` ]t `` |
-| `goto_prev_class` | Goto previous type definition | normal: `` [t ``, select: `` [t `` |
-| `goto_next_parameter` | Goto next parameter | normal: `` ]a ``, select: `` ]a `` |
-| `goto_prev_parameter` | Goto previous parameter | normal: `` [a ``, select: `` [a `` |
-| `goto_next_comment` | Goto next comment | normal: `` ]c ``, select: `` ]c `` |
-| `goto_prev_comment` | Goto previous comment | normal: `` [c ``, select: `` [c `` |
-| `goto_next_test` | Goto next test | normal: `` ]T ``, select: `` ]T `` |
-| `goto_prev_test` | Goto previous test | normal: `` [T ``, select: `` [T `` |
-| `goto_next_xml_element` | Goto next (X)HTML element | normal: `` ]x ``, select: `` ]x `` |
-| `goto_prev_xml_element` | Goto previous (X)HTML element | normal: `` [x ``, select: `` [x `` |
-| `goto_next_entry` | Goto next pairing | normal: `` ]e ``, select: `` ]e `` |
-| `goto_prev_entry` | Goto previous pairing | normal: `` [e ``, select: `` [e `` |
+| `goto_next_function` | Goto next function |  |
+| `goto_prev_function` | Goto previous function |  |
+| `goto_next_class` | Goto next type definition |  |
+| `goto_prev_class` | Goto previous type definition |  |
+| `goto_next_parameter` | Goto next parameter |  |
+| `goto_prev_parameter` | Goto previous parameter |  |
+| `goto_next_comment` | Goto next comment |  |
+| `goto_prev_comment` | Goto previous comment |  |
+| `goto_next_test` | Goto next test |  |
+| `goto_prev_test` | Goto previous test |  |
+| `goto_next_xml_element` | Goto next (X)HTML element |  |
+| `goto_prev_xml_element` | Goto previous (X)HTML element |  |
+| `goto_next_entry` | Goto next pairing |  |
+| `goto_prev_entry` | Goto previous pairing |  |
+| `ts_flash_next_function` | Flash-jump to a visible function (forward) | normal: `` ]f ``, select: `` ]f `` |
+| `ts_flash_prev_function` | Flash-jump to a visible function (backward) | normal: `` [f ``, select: `` [f `` |
+| `ts_flash_next_class` | Flash-jump to a visible type definition (forward) | normal: `` ]t ``, select: `` ]t `` |
+| `ts_flash_prev_class` | Flash-jump to a visible type definition (backward) | normal: `` [t ``, select: `` [t `` |
+| `ts_flash_next_parameter` | Flash-jump to a visible parameter (forward) | normal: `` ]a ``, select: `` ]a `` |
+| `ts_flash_prev_parameter` | Flash-jump to a visible parameter (backward) | normal: `` [a ``, select: `` [a `` |
+| `ts_flash_next_comment` | Flash-jump to a visible comment (forward) | normal: `` ]c ``, select: `` ]c `` |
+| `ts_flash_prev_comment` | Flash-jump to a visible comment (backward) | normal: `` [c ``, select: `` [c `` |
+| `ts_flash_next_test` | Flash-jump to a visible test (forward) | normal: `` ]T ``, select: `` ]T `` |
+| `ts_flash_prev_test` | Flash-jump to a visible test (backward) | normal: `` [T ``, select: `` [T `` |
+| `ts_flash_next_xml_element` | Flash-jump to a visible (X)HTML element (forward) | normal: `` ]x ``, select: `` ]x `` |
+| `ts_flash_prev_xml_element` | Flash-jump to a visible (X)HTML element (backward) | normal: `` [x ``, select: `` [x `` |
+| `ts_flash_next_entry` | Flash-jump to a visible entry/pairing (forward) | normal: `` ]e ``, select: `` ]e `` |
+| `ts_flash_prev_entry` | Flash-jump to a visible entry/pairing (backward) | normal: `` [e ``, select: `` [e `` |
 | `goto_next_paragraph` | Goto next paragraph | normal: `` ]p ``, select: `` ]p `` |
 | `goto_prev_paragraph` | Goto previous paragraph | normal: `` [p ``, select: `` [p `` |
+| `extend_to_next_paragraph` | Extend to next paragraph |  |
+| `extend_to_prev_paragraph` | Extend to previous paragraph |  |
+| `extend_to_matching_bracket` | Extend to matching bracket |  |
 | `dap_launch` | Launch debug target | normal: `` <space>Gl ``, select: `` <space>Gl `` |
 | `dap_restart` | Restart debugging session | normal: `` <space>Gr ``, select: `` <space>Gr `` |
 | `dap_toggle_breakpoint` | Toggle breakpoint | normal: `` <space>Gb ``, select: `` <space>Gb `` |
@@ -309,7 +341,34 @@
 | `command_palette` | Open command palette | normal: `` <space>? ``, select: `` <space>? `` |
 | `goto_word` | Jump to a two-character label | normal: `` gw `` |
 | `extend_to_word` | Extend to a two-character label | select: `` gw `` |
+| `flash_jump` | Flash jump to a search match | normal: `` gS `` |
+| `extend_flash_jump` | Extend selection to a flash jump match | select: `` gS `` |
+| `flash_search` | Flash jump using last search pattern | normal: `` g/ ``, select: `` g/ `` |
+| `search_all` | Flash search across the entire visible viewport (both directions) |  |
+| `regex_search` | Open a regex search prompt (forward, no flash) | normal: `` <A-/> ``, select: `` <A-/> `` |
+| `regex_rsearch` | Open a regex search prompt (backward, no flash) | normal: `` <A-?> ``, select: `` <A-?> `` |
 | `goto_next_tabstop` | Goto next snippet placeholder |  |
 | `goto_prev_tabstop` | Goto next snippet placeholder |  |
 | `rotate_selections_first` | Make the first selection your primary one |  |
 | `rotate_selections_last` | Make the last selection your primary one |  |
+| `git_open_file_in_browser` | Open current file on the git hosting website | normal: `` <space>gof ``, select: `` <space>gof `` |
+| `git_open_line_in_browser` | Open current file at the cursor line on the git hosting website | normal: `` <space>go. ``, `` <space>gol ``, select: `` <space>go. ``, `` <space>gol `` |
+| `vim_move_next_word_start` | Vim: move to next word start |  |
+| `vim_move_next_long_word_start` | Vim: move to next WORD start |  |
+| `vim_operator_delete` | Vim: delete operator (awaits motion) |  |
+| `vim_operator_yank` | Vim: yank operator (awaits motion) |  |
+| `vim_operator_change` | Vim: change operator (awaits motion) |  |
+| `vim_operator_indent` | Vim: indent operator (awaits motion) |  |
+| `vim_operator_unindent` | Vim: unindent operator (awaits motion) |  |
+| `vim_operator_uppercase` | Vim: uppercase operator (awaits motion) |  |
+| `vim_operator_lowercase` | Vim: lowercase operator (awaits motion) |  |
+| `vim_operator_switchcase` | Vim: switch case operator (awaits motion) |  |
+| `vim_visual_mode_char` | Vim: enter charwise visual mode |  |
+| `vim_visual_mode_line` | Vim: enter linewise visual mode |  |
+| `vim_visual_mode_block` | Vim: enter blockwise visual mode |  |
+| `vim_visual_yank` | Vim: yank selection and return to normal mode |  |
+| `vim_change_to_line_end` | Vim: change to end of line |  |
+| `vim_delete_to_line_end` | Vim: delete to end of line |  |
+| `vim_dot_repeat` | Vim: repeat last operator+motion |  |
+| `vim_yank_line` | Vim: yank current line |  |
+| `vim_substitute_line` | Vim: substitute entire line |  |
